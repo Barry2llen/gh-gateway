@@ -1,14 +1,15 @@
 # gh-gateway
 
-Minimal GitHub compatibility gateway for the three Codex P0 commands:
+Minimal GitHub compatibility gateway for the three Codex P0 commands and the first P1-A authenticated-user lookup:
 
 ```text
 gh repo view --json nameWithOwner,parent
 gh pr view --json number,url,state
 gh api -H "Accept: application/vnd.github+json" repos/OWNER/REPO/commits/HEAD_SHA/pulls
+gh api user
 ```
 
-The gateway exposes `POST /api/graphql` for the `RepositoryInfo` and `PullRequestForBranch` operations, plus `GET /api/v3/repos/{owner}/{repo}/commits/{sha}/pulls` for the commit-to-PR fallback. It translates them to Gitea's repository and paginated pull-request REST endpoints.
+The gateway exposes `POST /api/graphql` for the `RepositoryInfo` and `PullRequestForBranch` operations, `GET /api/v3/repos/{owner}/{repo}/commits/{sha}/pulls` for the commit-to-PR fallback, and `GET /api/v3/user` for the authenticated login. It translates them to Gitea's repository, paginated pull-request, and authenticated-user REST endpoints.
 
 ## Run
 
@@ -37,7 +38,7 @@ docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
 docker compose down -v --remove-orphans
 ```
 
-The E2E runner verifies both Enterprise-style API prefixes, authentication forwarding, repository/fork mapping, branch PR lookup, commit HEAD lookup, the unassociated-commit empty array, and that the github.com-style `/graphql` and `/repos/...` paths remain unavailable.
+The E2E runner verifies both Enterprise-style API prefixes, authentication forwarding, authenticated-user lookup, repository/fork mapping, branch PR lookup, commit HEAD lookup, the unassociated-commit empty array, and that the github.com-style `/graphql`, `/user`, and `/repos/...` paths remain unavailable.
 
 ## Manual `gh` verification
 
@@ -59,6 +60,7 @@ git remote add origin https://git.example.com/foo/bar.git
 $env:GH_HOST = 'git.example.com'
 $env:GH_ENTERPRISE_TOKEN = 'gitea-token'
 $env:GH_PROMPT_DISABLED = '1'
+gh api user
 gh repo view --json nameWithOwner,parent
 gh pr view --json number,url,state
 $headSHA = git rev-parse HEAD
@@ -71,4 +73,4 @@ Expected non-fork output:
 {"nameWithOwner":"foo/bar","parent":null}
 ```
 
-No `/graphql`, root `/repos/...`, explicit PR selector, checks, Actions, review, create, or merge compatibility is provided. `PullRequestForBranch` accepts only the exact `gh` 2.95.0 query shape with `states: null`. Commit-to-PR matching is intentionally limited to exact PR head SHA and merged commit SHA; it does not implement GitHub's full historical commit association semantics.
+No `/graphql`, root `/user`, root `/repos/...`, explicit PR selector, comments, reviews, checks, Actions, create, merge, or mutation compatibility is provided. `PullRequestForBranch` accepts only the exact `gh` 2.95.0 query shape with `states: null`. Commit-to-PR matching is intentionally limited to exact PR head SHA and merged commit SHA; it does not implement GitHub's full historical commit association semantics.

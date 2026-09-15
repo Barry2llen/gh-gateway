@@ -48,7 +48,7 @@ func TestCommitPullRequestsVerticalSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	router := gateway.NewRouter(http.NotFoundHandler(), NewHandler(pullrequest.NewService(provider)))
+	router := gateway.NewRouter(http.NotFoundHandler(), NewHandler(pullrequest.NewService(provider)), http.NotFoundHandler())
 	request := httptest.NewRequest(http.MethodGet, "/api/v3/repos/foo/bar/commits/wanted/pulls", nil)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("Authorization", "token gateway-request")
@@ -89,7 +89,7 @@ func TestCommitPullRequestsVerticalSliceHidesGiteaErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewClient() error = %v", err)
 			}
-			router := gateway.NewRouter(http.NotFoundHandler(), NewHandler(pullrequest.NewService(provider)))
+			router := gateway.NewRouter(http.NotFoundHandler(), NewHandler(pullrequest.NewService(provider)), http.NotFoundHandler())
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v3/repos/foo/bar/commits/wanted/pulls", nil))
 			if response.Code != tt.wantStatus {

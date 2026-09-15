@@ -13,6 +13,7 @@ import (
 	"gh-gateway/internal/graphqlapi"
 	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
+	userdomain "gh-gateway/internal/user"
 )
 
 func main() {
@@ -32,11 +33,13 @@ func main() {
 	}
 	repositoryService := repository.NewService(provider)
 	pullRequestService := pullrequest.NewService(provider)
+	userService := userdomain.NewService(provider)
 	server := &http.Server{
 		Addr: address,
 		Handler: gateway.NewRouter(
 			graphqlapi.NewHandler(repositoryService, pullRequestService),
 			githubrest.NewHandler(pullRequestService),
+			githubrest.NewUserHandler(userService),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

@@ -11,7 +11,8 @@ func TestRouterDispatchesEnterpriseGraphQLAndRESTPaths(t *testing.T) {
 
 	graphQL := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(210) })
 	commitPulls := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(211) })
-	router := NewRouter(graphQL, commitPulls)
+	authenticatedUser := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(212) })
+	router := NewRouter(graphQL, commitPulls, authenticatedUser)
 
 	tests := []struct {
 		method string
@@ -20,7 +21,9 @@ func TestRouterDispatchesEnterpriseGraphQLAndRESTPaths(t *testing.T) {
 	}{
 		{method: http.MethodPost, path: "/api/graphql", want: 210},
 		{method: http.MethodGet, path: "/api/v3/repos/foo/bar/commits/abc/pulls", want: 211},
+		{method: http.MethodGet, path: "/api/v3/user", want: 212},
 		{method: http.MethodGet, path: "/repos/foo/bar/commits/abc/pulls", want: http.StatusNotFound},
+		{method: http.MethodGet, path: "/user", want: http.StatusNotFound},
 	}
 	for _, tt := range tests {
 		response := httptest.NewRecorder()

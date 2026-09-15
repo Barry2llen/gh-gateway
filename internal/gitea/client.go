@@ -13,6 +13,7 @@ import (
 
 	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
+	userdomain "gh-gateway/internal/user"
 )
 
 const maxResponseBytes = 1 << 20
@@ -40,6 +41,10 @@ type ownerDTO struct {
 	ID       int64  `json:"id"`
 	Login    string `json:"login"`
 	FullName string `json:"full_name"`
+}
+
+type authenticatedUserDTO struct {
+	Login string `json:"login"`
 }
 
 type pullRequestDTO struct {
@@ -130,6 +135,43 @@ func (c *Client) GetRepository(ctx context.Context, owner, name, authorization s
 		}
 	}
 	return mapped, nil
+}
+
+func (c *Client) GetAuthenticatedUser(ctx context.Context, authorization string) (userdomain.AuthenticatedUser, error) {
+	endpoint := c.baseURL.JoinPath("api", "v1", "user")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return userdomain.AuthenticatedUser{}, fmt.Errorf("create Gitea authenticated user request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	c.applyAuthorization(request, authorization)
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return userdomain.AuthenticatedUser{}, fmt.Errorf("request Gitea authenticated user: %w", err)
+	}
+	defer response.Body.Close()
+
+	switch response.StatusCode {
+	case http.StatusOK:
+		// Continue below.
+	case http.StatusUnauthorized:
+		return userdomain.AuthenticatedUser{}, userdomain.ErrUnauthorized
+	case http.StatusForbidden:
+		return userdomain.AuthenticatedUser{}, userdomain.ErrForbidden
+	default:
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
+		return userdomain.AuthenticatedUser{}, fmt.Errorf("Gitea authenticated user request returned HTTP %d", response.StatusCode)
+	}
+
+	var dto authenticatedUserDTO
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(&dto); err != nil {
+		return userdomain.AuthenticatedUser{}, fmt.Errorf("decode Gitea authenticated user response: %w", err)
+	}
+	if dto.Login == "" {
+		return userdomain.AuthenticatedUser{}, errors.New("Gitea authenticated user response is missing login")
+	}
+	return userdomain.AuthenticatedUser{Login: dto.Login}, nil
 }
 
 func (c *Client) GetRepositoryMetadata(ctx context.Context, owner, name, authorization string) (pullrequest.RepositoryMetadata, error) {

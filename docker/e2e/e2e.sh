@@ -110,6 +110,32 @@ export GH_HOST=git.example.test
 export GH_PROMPT_DISABLED=1
 
 export GH_ENTERPRISE_TOKEN="${gateway_token}"
+caddy_access_log="/caddy-data/access.log"
+access_log_lines=0
+if [ -f "${caddy_access_log}" ]; then
+  access_log_lines="$(wc -l < "${caddy_access_log}")"
+fi
+authenticated_user_json="$(gh api user)"
+echo "authenticated user: ${authenticated_user_json}"
+echo "${authenticated_user_json}" | jq -e '.login == "gateway"' >/dev/null \
+  || fail "unexpected authenticated user gh output"
+
+attempts=0
+until tail -n "+$((access_log_lines + 1))" "${caddy_access_log}" 2>/dev/null \
+  | jq -s -e 'any(.[]; .request.method == "GET" and .request.uri == "/api/v3/user")' >/dev/null 2>&1; do
+  attempts=$((attempts + 1))
+  [ "${attempts}" -lt 30 ] || fail "Caddy access log did not record GET /api/v3/user"
+  sleep 1
+done
+echo "authenticated user path: GET /api/v3/user"
+
+wrong_user_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Accept: application/vnd.github+json' \
+  https://git.example.test/user)"
+[ "${wrong_user_path_status}" = "404" ] \
+  || fail "/user returned HTTP ${wrong_user_path_status}, want 404"
+
 nonfork_json="$(cd /tmp/nonfork && gh repo view --json nameWithOwner,parent)"
 echo "non-fork: ${nonfork_json}"
 echo "${nonfork_json}" | jq -e '.nameWithOwner == "gateway/bar" and .parent == null' >/dev/null \
