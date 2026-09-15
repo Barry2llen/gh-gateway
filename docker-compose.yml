@@ -15,9 +15,10 @@ services:
       GITEA__database__DB_TYPE: sqlite3
       GITEA__database__PATH: /data/gitea/gitea.db
       GITEA__security__INSTALL_LOCK: "true"
-      GITEA__server__ROOT_URL: http://gitea:3000/
+      GITEA__server__ROOT_URL: https://git.example.test/
       GITEA__server__DISABLE_SSH: "true"
       GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__repository__DEFAULT_BRANCH: main
     volumes:
       - gitea-data:/data
       - e2e-state:/state

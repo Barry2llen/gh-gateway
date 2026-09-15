@@ -8,7 +8,9 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/vektah/gqlparser/v2/ast"
 
+	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
 )
 
@@ -18,8 +20,13 @@ type RepositoryService interface {
 	Get(ctx context.Context, owner, name, authorization string) (repository.Repository, error)
 }
 
+type PullRequestService interface {
+	FindForBranch(ctx context.Context, query pullrequest.Query) (pullrequest.Result, error)
+}
+
 type handler struct {
-	service RepositoryService
+	repositories RepositoryService
+	pullRequests PullRequestService
 }
 
 type graphQLResponse struct {
@@ -37,14 +44,31 @@ type repositoryData struct {
 	Repository *repository.Repository `json:"repository"`
 }
 
-func NewRouter(service RepositoryService) http.Handler {
-	h := &handler{service: service}
+type pullRequestData struct {
+	Repository *pullRequestRepository `json:"repository"`
+}
+
+type pullRequestRepository struct {
+	PullRequests     pullRequestConnection `json:"pullRequests"`
+	DefaultBranchRef defaultBranchRef      `json:"defaultBranchRef"`
+}
+
+type pullRequestConnection struct {
+	Nodes []pullrequest.PullRequest `json:"nodes"`
+}
+
+type defaultBranchRef struct {
+	Name string `json:"name"`
+}
+
+func NewRouter(repositories RepositoryService, pullRequests PullRequestService) http.Handler {
+	h := &handler{repositories: repositories, pullRequests: pullRequests}
 	router := chi.NewRouter()
-	router.Post("/api/graphql", h.repositoryInfo)
+	router.Post("/api/graphql", h.graphQL)
 	return router
 }
 
-func (h *handler) repositoryInfo(w http.ResponseWriter, r *http.Request) {
+func (h *handler) graphQL(w http.ResponseWriter, r *http.Request) {
 	var request graphQLRequest
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	decoder.DisallowUnknownFields()
@@ -63,7 +87,7 @@ func (h *handler) repositoryInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := parseRepositoryInfo(request)
+	operation, err := parseOperation(request)
 	if err != nil {
 		writeJSON(w, http.StatusOK, graphQLResponse{
 			Data:   nil,
@@ -71,13 +95,54 @@ func (h *handler) repositoryInfo(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	switch operation.Name {
+	case "RepositoryInfo":
+		h.repositoryInfo(w, r, request, operation)
+	case "PullRequestForBranch":
+		h.pullRequestForBranch(w, r, request, operation)
+	default:
+		writeJSON(w, http.StatusOK, graphQLResponse{
+			Data:   nil,
+			Errors: []graphQLError{{Type: "BAD_USER_INPUT", Message: "Unsupported GraphQL operation."}},
+		})
+	}
+}
 
-	result, err := h.service.Get(r.Context(), info.Owner, info.Name, r.Header.Get("Authorization"))
+func (h *handler) repositoryInfo(w http.ResponseWriter, r *http.Request, request graphQLRequest, operation *ast.OperationDefinition) {
+	info, err := parseRepositoryInfoOperation(request, operation)
+	if err != nil {
+		writeJSON(w, http.StatusOK, graphQLResponse{Data: nil, Errors: []graphQLError{{Type: "BAD_USER_INPUT", Message: err.Error()}}})
+		return
+	}
+
+	result, err := h.repositories.Get(r.Context(), info.Owner, info.Name, r.Header.Get("Authorization"))
 	if err != nil {
 		h.writeServiceError(w, info, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, graphQLResponse{Data: repositoryData{Repository: &result}})
+}
+
+func (h *handler) pullRequestForBranch(w http.ResponseWriter, r *http.Request, request graphQLRequest, operation *ast.OperationDefinition) {
+	info, err := parsePullRequestForBranchOperation(request, operation)
+	if err != nil {
+		writeJSON(w, http.StatusOK, graphQLResponse{Data: nil, Errors: []graphQLError{{Type: "BAD_USER_INPUT", Message: err.Error()}}})
+		return
+	}
+	result, err := h.pullRequests.FindForBranch(r.Context(), pullrequest.Query{
+		Owner:         info.Owner,
+		Repo:          info.Repo,
+		HeadRefName:   info.HeadRefName,
+		Authorization: r.Header.Get("Authorization"),
+	})
+	if err != nil {
+		h.writePullRequestServiceError(w, info, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, graphQLResponse{Data: pullRequestData{Repository: &pullRequestRepository{
+		PullRequests:     pullRequestConnection{Nodes: result.Nodes},
+		DefaultBranchRef: defaultBranchRef{Name: result.DefaultBranch},
+	}}})
 }
 
 func (h *handler) writeServiceError(w http.ResponseWriter, info repositoryInfo, err error) {
@@ -92,6 +157,22 @@ func (h *handler) writeServiceError(w http.ResponseWriter, info repositoryInfo, 
 	}
 	writeJSON(w, http.StatusOK, graphQLResponse{
 		Data:   repositoryData{Repository: nil},
+		Errors: []graphQLError{{Type: errorType, Path: []string{"repository"}, Message: message}},
+	})
+}
+
+func (h *handler) writePullRequestServiceError(w http.ResponseWriter, info pullRequestForBranch, err error) {
+	errorType := "INTERNAL"
+	message := "The pull requests could not be retrieved."
+	if errors.Is(err, pullrequest.ErrNotFound) {
+		errorType = "NOT_FOUND"
+		message = "Could not resolve to a Repository with the name '" + info.Owner + "/" + info.Repo + "'."
+	} else if errors.Is(err, pullrequest.ErrForbidden) {
+		errorType = "FORBIDDEN"
+		message = "Resource not accessible with the supplied credentials."
+	}
+	writeJSON(w, http.StatusOK, graphQLResponse{
+		Data:   pullRequestData{Repository: nil},
 		Errors: []graphQLError{{Type: errorType, Path: []string{"repository"}, Message: message}},
 	})
 }

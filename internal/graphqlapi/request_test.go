@@ -11,6 +11,15 @@ const repositoryInfoQuery = `query RepositoryInfo($owner: String!, $name: String
   }
 }`
 
+const pullRequestForBranchQuery = `query PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!]) {
+  repository(owner: $owner, name: $repo) {
+    pullRequests(headRefName: $headRefName, states: $states, first: 30, orderBy: { field: CREATED_AT, direction: DESC }) {
+      nodes {number,url,state,id,baseRefName,headRefName,isCrossRepository,headRepositoryOwner{id,login,...on User{name}}}
+    }
+    defaultBranchRef { name }
+  }
+}`
+
 func TestParseRepositoryInfoRequest(t *testing.T) {
 	t.Parallel()
 
@@ -76,5 +85,42 @@ func TestParseRepositoryInfoRejectsUnsupportedOperation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("parseRepositoryInfo() error = nil, want unsupported operation error")
+	}
+}
+
+func TestParsePullRequestForBranch(t *testing.T) {
+	t.Parallel()
+
+	got, err := parsePullRequestForBranch(graphQLRequest{
+		Query: pullRequestForBranchQuery,
+		Variables: map[string]json.RawMessage{
+			"owner":       json.RawMessage(`"foo"`),
+			"repo":        json.RawMessage(`"bar"`),
+			"headRefName": json.RawMessage(`"feature"`),
+			"states":      json.RawMessage(`null`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("parsePullRequestForBranch() error = %v", err)
+	}
+	if got.Owner != "foo" || got.Repo != "bar" || got.HeadRefName != "feature" {
+		t.Fatalf("parsePullRequestForBranch() = %#v", got)
+	}
+}
+
+func TestParsePullRequestForBranchRejectsNonNullStates(t *testing.T) {
+	t.Parallel()
+
+	_, err := parsePullRequestForBranch(graphQLRequest{
+		Query: pullRequestForBranchQuery,
+		Variables: map[string]json.RawMessage{
+			"owner":       json.RawMessage(`"foo"`),
+			"repo":        json.RawMessage(`"bar"`),
+			"headRefName": json.RawMessage(`"feature"`),
+			"states":      json.RawMessage(`["OPEN"]`),
+		},
+	})
+	if err == nil {
+		t.Fatal("parsePullRequestForBranch() error = nil, want error")
 	}
 }

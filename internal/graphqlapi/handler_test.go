@@ -5,16 +5,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
 )
 
 type serviceStub struct {
 	get func(context.Context, string, string, string) (repository.Repository, error)
+}
+
+type pullRequestServiceStub struct {
+	find func(context.Context, pullrequest.Query) (pullrequest.Result, error)
+}
+
+func (s pullRequestServiceStub) FindForBranch(ctx context.Context, query pullrequest.Query) (pullrequest.Result, error) {
+	return s.find(ctx, query)
 }
 
 func (s serviceStub) Get(ctx context.Context, owner, name, authorization string) (repository.Repository, error) {
@@ -34,7 +44,7 @@ func TestHandlerReturnsRepositoryEnvelope(t *testing.T) {
 		return repository.Repository{NameWithOwner: "foo/bar"}, nil
 	}}
 
-	response := performGraphQLRequest(t, NewRouter(service), repositoryInfoQuery, "RepositoryInfo", "token secret")
+	response := performGraphQLRequest(t, NewRouter(service, nil), repositoryInfoQuery, "RepositoryInfo", "token secret")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
@@ -52,7 +62,7 @@ func TestHandlerMapsNotFoundToGraphQLError(t *testing.T) {
 	service := serviceStub{get: func(context.Context, string, string, string) (repository.Repository, error) {
 		return repository.Repository{}, repository.ErrNotFound
 	}}
-	response := performGraphQLRequest(t, NewRouter(service), repositoryInfoQuery, "", "")
+	response := performGraphQLRequest(t, NewRouter(service, nil), repositoryInfoQuery, "", "")
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
@@ -92,7 +102,7 @@ func TestHandlerRejectsUnsupportedOperationWithoutCallingService(t *testing.T) {
 		called = true
 		return repository.Repository{}, errors.New("unexpected")
 	}}
-	response := performGraphQLRequest(t, NewRouter(service), `query ViewerInfo { viewer { login } }`, "", "")
+	response := performGraphQLRequest(t, NewRouter(service, nil), `query ViewerInfo { viewer { login } }`, "", "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
 	}
@@ -113,9 +123,76 @@ func TestHandlerRejectsMalformedJSON(t *testing.T) {
 	}}
 	request := httptest.NewRequest(http.MethodPost, "/api/graphql", strings.NewReader(`{"query":`))
 	response := httptest.NewRecorder()
-	NewRouter(service).ServeHTTP(response, request)
+	NewRouter(service, nil).ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", response.Code)
+	}
+}
+
+func TestHandlerDispatchesPullRequestForBranch(t *testing.T) {
+	t.Parallel()
+
+	prService := pullRequestServiceStub{find: func(_ context.Context, query pullrequest.Query) (pullrequest.Result, error) {
+		if query.Owner != "foo" || query.Repo != "bar" || query.HeadRefName != "feature" || query.Authorization != "token secret" {
+			t.Fatalf("query = %#v", query)
+		}
+		return pullrequest.Result{
+			DefaultBranch: "main",
+			Nodes: []pullrequest.PullRequest{{
+				Number:      1,
+				URL:         "https://git.example.test/foo/bar/pulls/1",
+				State:       pullrequest.StateOpen,
+				ID:          "11",
+				BaseRefName: "main",
+				HeadRefName: "feature",
+				HeadRepositoryOwner: &pullrequest.RepositoryOwner{
+					ID: "7", Login: "foo", Name: "Foo",
+				},
+			}},
+		}, nil
+	}}
+	response := performGraphQLRequest(t, NewRouter(nil, prService), pullRequestForBranchQuery, "", "token secret")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	data := body["data"].(map[string]any)
+	repo := data["repository"].(map[string]any)
+	nodes := repo["pullRequests"].(map[string]any)["nodes"].([]any)
+	if len(nodes) != 1 || nodes[0].(map[string]any)["state"] != "OPEN" {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestHandlerReturnsEmptyPullRequestNodesWithoutErrors(t *testing.T) {
+	t.Parallel()
+
+	prService := pullRequestServiceStub{find: func(context.Context, pullrequest.Query) (pullrequest.Result, error) {
+		return pullrequest.Result{DefaultBranch: "main", Nodes: []pullrequest.PullRequest{}}, nil
+	}}
+	response := performGraphQLRequest(t, NewRouter(nil, prService), pullRequestForBranchQuery, "PullRequestForBranch", "")
+	got := strings.TrimSpace(response.Body.String())
+	want := `{"data":{"repository":{"pullRequests":{"nodes":[]},"defaultBranchRef":{"name":"main"}}}}`
+	if response.Code != http.StatusOK || got != want {
+		t.Fatalf("status/body = %d %s, want 200 %s", response.Code, got, want)
+	}
+}
+
+func TestHandlerHidesPullRequestServiceErrors(t *testing.T) {
+	t.Parallel()
+
+	prService := pullRequestServiceStub{find: func(context.Context, pullrequest.Query) (pullrequest.Result, error) {
+		return pullrequest.Result{}, fmt.Errorf("wrapped: %w: gitea secret", pullrequest.ErrForbidden)
+	}}
+	response := performGraphQLRequest(t, NewRouter(nil, prService), pullRequestForBranchQuery, "", "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"FORBIDDEN"`) {
+		t.Fatalf("status/body = %d %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "gitea secret") {
+		t.Fatalf("body leaked service error: %s", response.Body.String())
 	}
 }
 
@@ -125,8 +202,11 @@ func performGraphQLRequest(t *testing.T, handler http.Handler, query, operationN
 		"query":         query,
 		"operationName": operationName,
 		"variables": map[string]any{
-			"owner": "foo",
-			"name":  "bar",
+			"owner":       "foo",
+			"name":        "bar",
+			"repo":        "bar",
+			"headRefName": "feature",
+			"states":      nil,
 		},
 	})
 	if err != nil {

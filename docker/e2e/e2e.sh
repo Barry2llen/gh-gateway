@@ -37,6 +37,50 @@ case "${create_status}" in
   *) cat /tmp/create-repository.json >&2; fail "repository creation returned HTTP ${create_status}" ;;
 esac
 
+initial_content="$(printf '%s\n' '# gateway e2e' | base64 | tr -d '\n')"
+initial_body="$(jq -nc --arg content "${initial_content}" '{message:"initialize main",content:$content,branch:"main"}')"
+initial_status="$(curl -sS -o /tmp/create-main.json -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Content-Type: application/json' \
+  -d "${initial_body}" \
+  "${gitea_url}/repos/gateway/bar/contents/README.md")"
+case "${initial_status}" in
+  201|422) ;;
+  *) cat /tmp/create-main.json >&2; fail "main initialization returned HTTP ${initial_status}" ;;
+esac
+
+branch_status="$(curl -sS -o /tmp/create-branch.json -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Content-Type: application/json' \
+  -d '{"new_branch_name":"feature","old_branch_name":"main"}' \
+  "${gitea_url}/repos/gateway/bar/branches")"
+case "${branch_status}" in
+  201|409|422) ;;
+  *) cat /tmp/create-branch.json >&2; fail "feature branch creation returned HTTP ${branch_status}" ;;
+esac
+
+feature_content="$(printf '%s\n' 'feature branch change' | base64 | tr -d '\n')"
+feature_body="$(jq -nc --arg content "${feature_content}" '{message:"add feature",content:$content,branch:"feature"}')"
+feature_status="$(curl -sS -o /tmp/create-feature.json -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Content-Type: application/json' \
+  -d "${feature_body}" \
+  "${gitea_url}/repos/gateway/bar/contents/feature.txt")"
+case "${feature_status}" in
+  201|422) ;;
+  *) cat /tmp/create-feature.json >&2; fail "feature commit creation returned HTTP ${feature_status}" ;;
+esac
+
+pr_status="$(curl -sS -o /tmp/create-pr.json -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Gateway E2E PR","head":"feature","base":"main","body":"Created by the gh-gateway E2E suite."}' \
+  "${gitea_url}/repos/gateway/bar/pulls")"
+case "${pr_status}" in
+  201|409) ;;
+  *) cat /tmp/create-pr.json >&2; fail "pull request creation returned HTTP ${pr_status}" ;;
+esac
+
 fork_status="$(curl -sS -o /tmp/create-fork.json -w '%{http_code}' \
   -H "Authorization: token ${forker_token}" \
   -H 'Content-Type: application/json' \
@@ -81,6 +125,17 @@ echo "${fork_json}" | jq -e '
   (.parent.id | type) == "string" and
   (.parent.owner.id | type) == "string"
 ' >/dev/null || fail "unexpected fork gh output"
+
+git clone -q --branch feature "http://gateway:${gateway_token}@gitea:3000/gateway/bar.git" /tmp/pr
+git -C /tmp/pr remote set-url origin https://git.example.test/gateway/bar.git
+export GH_ENTERPRISE_TOKEN="${gateway_token}"
+pr_json="$(cd /tmp/pr && gh pr view --json number,url,state)"
+echo "pull request: ${pr_json}"
+echo "${pr_json}" | jq -e '
+  .number == 1 and
+  .state == "OPEN" and
+  .url == "https://git.example.test/gateway/bar/pulls/1"
+' >/dev/null || fail "unexpected pull request gh output"
 
 wrong_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: token ${forker_token}" \

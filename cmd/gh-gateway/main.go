@@ -9,6 +9,7 @@ import (
 
 	"gh-gateway/internal/gitea"
 	"gh-gateway/internal/graphqlapi"
+	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
 )
 
@@ -27,10 +28,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure Gitea client: %v", err)
 	}
-	service := repository.NewService(provider)
+	repositoryService := repository.NewService(provider)
+	pullRequestService := pullrequest.NewService(provider)
 	server := &http.Server{
 		Addr:              address,
-		Handler:           graphqlapi.NewRouter(service),
+		Handler:           graphqlapi.NewRouter(repositoryService, pullRequestService),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

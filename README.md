@@ -1,12 +1,13 @@
 # gh-gateway
 
-Minimal GitHub GraphQL compatibility gateway for one command:
+Minimal GitHub GraphQL compatibility gateway for two commands:
 
 ```text
 gh repo view --json nameWithOwner,parent
+gh pr view --json number,url,state
 ```
 
-The gateway exposes only `POST /api/graphql` and translates `RepositoryInfo` to Gitea's `GET /api/v1/repos/{owner}/{repo}` endpoint.
+The gateway exposes only `POST /api/graphql` and dispatches the `RepositoryInfo` and `PullRequestForBranch` operations. It translates them to Gitea's repository and paginated pull-request REST endpoints.
 
 ## Run
 
@@ -27,7 +28,7 @@ go test ./...
 go test -race ./...
 ```
 
-The complete containerized suite does not depend on a host C compiler. It runs regular and race-enabled Go tests, starts Gitea 1.25.5, terminates trusted test TLS with Caddy, and executes `gh` 2.95.0 against both a normal repository and a real fork:
+The complete containerized suite does not depend on a host C compiler. It runs regular and race-enabled Go tests, starts Gitea 1.25.5, terminates trusted test TLS with Caddy, and executes `gh` 2.95.0 against a normal repository, a real fork, and a real open pull request:
 
 ```powershell
 docker compose --profile test run --rm --build tests
@@ -35,7 +36,7 @@ docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
 docker compose down -v --remove-orphans
 ```
 
-The E2E runner verifies that the Enterprise-style request reaches `/api/graphql`, authentication is forwarded to Gitea, non-fork `parent` is null, fork parent IDs are JSON strings, and `/graphql` remains unavailable.
+The E2E runner verifies that the Enterprise-style request reaches `/api/graphql`, authentication is forwarded to Gitea, non-fork `parent` is null, fork parent IDs are JSON strings, `gh pr view` returns the expected number/state/URL, and `/graphql` remains unavailable.
 
 ## Manual `gh` verification
 
@@ -65,4 +66,4 @@ Expected non-fork output:
 {"nameWithOwner":"foo/bar","parent":null}
 ```
 
-No `/graphql`, REST, pull request, checks, Actions, review, create, or merge compatibility is provided in this slice.
+No `/graphql`, GitHub REST, explicit PR selector, commit-to-PR fallback, checks, Actions, review, create, or merge compatibility is provided in this slice. `PullRequestForBranch` accepts only the exact `gh` 2.95.0 query shape with `states: null`.
