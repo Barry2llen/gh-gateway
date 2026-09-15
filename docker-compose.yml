@@ -74,6 +74,30 @@ services:
       caddy:
         condition: service_started
 
+  codex-e2e:
+    profiles: ["codex"]
+    build:
+      context: .
+      dockerfile: docker/codex-e2e/Dockerfile
+      args:
+        CODEX_VERSION: 0.154.0
+        GH_VERSION: 2.95.0
+    environment:
+      CODEX_HOME: /codex-home
+      GH_HOST: git.example.test
+      GH_PROMPT_DISABLED: "1"
+    volumes:
+      - e2e-state:/state:ro
+      - caddy-data:/caddy-data:ro
+    depends_on:
+      gitea:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+    stdin_open: true
+    tty: true
+    entrypoint: ["/bin/bash"]
+
 volumes:
   gitea-data:
   e2e-state:

@@ -4,5 +4,9 @@
 
 git.example.test {
 	tls internal
+	log {
+		output file /data/access.log
+		format json
+	}
 	reverse_proxy gateway:8080
 }
