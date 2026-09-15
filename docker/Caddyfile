@@ -1,0 +1,8 @@
+{
+	admin off
+}
+
+git.example.test {
+	tls internal
+	reverse_proxy gateway:8080
+}

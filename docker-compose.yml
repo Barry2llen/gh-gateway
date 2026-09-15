@@ -1,0 +1,80 @@
+name: gh-gateway-e2e
+
+services:
+  tests:
+    profiles: ["test"]
+    build:
+      context: .
+      target: test
+
+  gitea:
+    build:
+      context: .
+      dockerfile: docker/gitea/Dockerfile
+    environment:
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__database__PATH: /data/gitea/gitea.db
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__ROOT_URL: http://gitea:3000/
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+    volumes:
+      - gitea-data:/data
+      - e2e-state:/state
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/healthz >/dev/null && test -s /state/gateway.token && test -s /state/forker.token"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+  gateway:
+    build:
+      context: .
+      target: runtime
+    environment:
+      GITEA_BASE_URL: http://gitea:3000
+      GATEWAY_ADDR: :8080
+    depends_on:
+      gitea:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z 127.0.0.1 8080"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      default:
+        aliases:
+          - git.example.test
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  e2e:
+    build:
+      context: .
+      dockerfile: docker/e2e/Dockerfile
+      args:
+        GH_VERSION: 2.95.0
+    volumes:
+      - e2e-state:/state:ro
+      - caddy-data:/caddy-data:ro
+    depends_on:
+      gitea:
+        condition: service_healthy
+      caddy:
+        condition: service_started
+
+volumes:
+  gitea-data:
+  e2e-state:
+  caddy-data:
+  caddy-config:

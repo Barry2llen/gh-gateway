@@ -27,6 +27,16 @@ go test ./...
 go test -race ./...
 ```
 
+The complete containerized suite does not depend on a host C compiler. It runs regular and race-enabled Go tests, starts Gitea 1.25.5, terminates trusted test TLS with Caddy, and executes `gh` 2.95.0 against both a normal repository and a real fork:
+
+```powershell
+docker compose --profile test run --rm --build tests
+docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
+docker compose down -v --remove-orphans
+```
+
+The E2E runner verifies that the Enterprise-style request reaches `/api/graphql`, authentication is forwarded to Gitea, non-fork `parent` is null, fork parent IDs are JSON strings, and `/graphql` remains unavailable.
+
 ## Manual `gh` verification
 
 `gh` requires HTTPS for a custom Enterprise-style host. Configure trusted DNS and a TLS-terminating reverse proxy so that:
