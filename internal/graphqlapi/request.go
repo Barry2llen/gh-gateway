@@ -14,7 +14,10 @@ import (
 const repositorySchema = `
 type Query {
   repository(owner: String!, name: String!): Repository
+  node(id: ID!): Node
 }
+
+interface Node { id: ID! }
 
 type Repository {
   id: ID!
@@ -23,6 +26,7 @@ type Repository {
   owner: RepositoryOwner!
   parent: Repository
   pullRequests(headRefName: String!, states: [PullRequestState!], first: Int!, orderBy: PullRequestOrder!): PullRequestConnection!
+  pullRequest(number: Int!): PullRequest
   defaultBranchRef: Ref
 }
 
@@ -50,16 +54,50 @@ type PullRequestConnection {
   nodes: [PullRequest!]!
 }
 
-type PullRequest {
+type PullRequest implements Node {
   number: Int!
   url: String!
   state: PullRequestState!
   id: ID!
   baseRefName: String!
   headRefName: String!
+  headRefOid: String!
+  mergedAt: DateTime
+  closedAt: DateTime
+  headRepository: Repository
   isCrossRepository: Boolean!
   headRepositoryOwner: RepositoryOwner
+  mergeable: MergeableState!
+  mergeStateStatus: MergeStateStatus!
+  reviewDecision: PullRequestReviewDecision
+  commits(last: Int!): PullRequestCommitConnection!
 }
+
+type PullRequestCommitConnection { nodes: [PullRequestCommit!]! }
+type PullRequestCommit { commit: Commit! }
+type Commit { statusCheckRollup: StatusCheckRollup }
+type StatusCheckRollup { contexts(first: Int!, after: String): StatusCheckRollupContextConnection! }
+type StatusCheckRollupContextConnection { nodes: [StatusCheckRollupContext!]!, pageInfo: PageInfo! }
+type PageInfo { hasNextPage: Boolean!, endCursor: String }
+union StatusCheckRollupContext = StatusContext | CheckRun
+type StatusContext {
+  context: String!, state: StatusState!, targetUrl: String, createdAt: DateTime!, description: String,
+  isRequired(pullRequestId: ID!): Boolean!
+}
+enum StatusState { EXPECTED ERROR FAILURE PENDING SUCCESS }
+type CheckRun {
+  name: String!, checkSuite: CheckSuite, status: String, conclusion: String, startedAt: DateTime,
+  completedAt: DateTime, detailsUrl: String, isRequired(pullRequestId: ID!): Boolean!
+}
+type CheckSuite { workflowRun: WorkflowRun }
+type WorkflowRun { workflow: Workflow }
+type Workflow { name: String! }
+
+scalar DateTime
+
+enum MergeableState { MERGEABLE CONFLICTING UNKNOWN }
+enum MergeStateStatus { BEHIND BLOCKED CLEAN DIRTY DRAFT HAS_HOOKS UNKNOWN UNSTABLE }
+enum PullRequestReviewDecision { APPROVED CHANGES_REQUESTED REVIEW_REQUIRED }
 
 enum PullRequestState {
   OPEN
@@ -98,6 +136,36 @@ type pullRequestForBranch struct {
 	Owner       string
 	Repo        string
 	HeadRefName string
+	Fields      pullRequestSelection
+}
+
+type pullRequestByNumber struct {
+	Owner  string
+	Repo   string
+	Number int64
+	Fields pullRequestSelection
+}
+
+type pullRequestStatusChecks struct {
+	ID     string
+	Cursor string
+}
+
+type fieldSet map[string]struct{}
+
+func (s fieldSet) Has(name string) bool {
+	_, ok := s[name]
+	return ok
+}
+
+type pullRequestSelection struct {
+	Fields              fieldSet
+	HeadRepository      fieldSet
+	HeadRepositoryOwner fieldSet
+}
+
+func (s pullRequestSelection) Has(name string) bool {
+	return s.Fields.Has(name)
 }
 
 func parseRepositoryInfo(request graphQLRequest) (repositoryInfo, error) {
@@ -139,7 +207,8 @@ func parsePullRequestForBranchOperation(request graphQLRequest, operation *ast.O
 	if operation.Name != "PullRequestForBranch" {
 		return pullRequestForBranch{}, errors.New("unsupported GraphQL operation; only PullRequestForBranch is available")
 	}
-	if err := validatePullRequestForBranchShape(operation); err != nil {
+	fields, err := validatePullRequestForBranchShape(operation)
+	if err != nil {
 		return pullRequestForBranch{}, err
 	}
 	owner, err := requiredStringVariable(request.Variables, "owner")
@@ -158,7 +227,69 @@ func parsePullRequestForBranchOperation(request graphQLRequest, operation *ast.O
 	if !ok || !bytes.Equal(bytes.TrimSpace(states), []byte("null")) {
 		return pullRequestForBranch{}, errors.New("variable \"states\" must be null for PullRequestForBranch")
 	}
-	return pullRequestForBranch{Owner: owner, Repo: repo, HeadRefName: headRefName}, nil
+	return pullRequestForBranch{Owner: owner, Repo: repo, HeadRefName: headRefName, Fields: fields}, nil
+}
+
+func parsePullRequestByNumber(request graphQLRequest) (pullRequestByNumber, error) {
+	operation, err := parseOperation(request)
+	if err != nil {
+		return pullRequestByNumber{}, err
+	}
+	return parsePullRequestByNumberOperation(request, operation)
+}
+
+func parsePullRequestByNumberOperation(request graphQLRequest, operation *ast.OperationDefinition) (pullRequestByNumber, error) {
+	if operation.Name != "PullRequestByNumber" {
+		return pullRequestByNumber{}, errors.New("unsupported GraphQL operation; only PullRequestByNumber is available")
+	}
+	fields, err := validatePullRequestByNumberShape(operation)
+	if err != nil {
+		return pullRequestByNumber{}, err
+	}
+	owner, err := requiredStringVariable(request.Variables, "owner")
+	if err != nil {
+		return pullRequestByNumber{}, err
+	}
+	repo, err := requiredStringVariable(request.Variables, "repo")
+	if err != nil {
+		return pullRequestByNumber{}, err
+	}
+	number, err := requiredIntVariable(request.Variables, "pr_number")
+	if err != nil {
+		return pullRequestByNumber{}, err
+	}
+	return pullRequestByNumber{Owner: owner, Repo: repo, Number: number, Fields: fields}, nil
+}
+
+func parsePullRequestStatusChecks(request graphQLRequest) (pullRequestStatusChecks, error) {
+	operation, err := parseOperation(request)
+	if err != nil {
+		return pullRequestStatusChecks{}, err
+	}
+	return parsePullRequestStatusChecksOperation(request, operation)
+}
+func parsePullRequestStatusChecksOperation(request graphQLRequest, operation *ast.OperationDefinition) (pullRequestStatusChecks, error) {
+	if operation.Name != "PullRequestStatusChecks" {
+		return pullRequestStatusChecks{}, errors.New("unsupported GraphQL operation; only PullRequestStatusChecks is available")
+	}
+	root, err := exactFields(operation.SelectionSet, "node")
+	if err != nil {
+		return pullRequestStatusChecks{}, err
+	}
+	if len(root["node"].Arguments) != 1 || !variableArgument(root["node"], "id", "id") {
+		return pullRequestStatusChecks{}, errors.New("node.id must use id variable")
+	}
+	id, err := requiredStringVariable(request.Variables, "id")
+	if err != nil {
+		return pullRequestStatusChecks{}, err
+	}
+	cursor := ""
+	if raw, ok := request.Variables["endCursor"]; ok && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if err := json.Unmarshal(raw, &cursor); err != nil || cursor == "" {
+			return pullRequestStatusChecks{}, errors.New("variable \"endCursor\" must be null or a non-empty string")
+		}
+	}
+	return pullRequestStatusChecks{ID: id, Cursor: cursor}, nil
 }
 
 func parseOperation(request graphQLRequest) (*ast.OperationDefinition, error) {
@@ -189,6 +320,18 @@ func requiredStringVariable(variables map[string]json.RawMessage, name string) (
 	}
 	if strings.TrimSpace(value) == "" {
 		return "", fmt.Errorf("variable %q must not be empty", name)
+	}
+	return value, nil
+}
+
+func requiredIntVariable(variables map[string]json.RawMessage, name string) (int64, error) {
+	raw, ok := variables[name]
+	if !ok {
+		return 0, fmt.Errorf("variable %q is required", name)
+	}
+	var value int64
+	if err := json.Unmarshal(raw, &value); err != nil || value <= 0 {
+		return 0, fmt.Errorf("variable %q must be a positive integer", name)
 	}
 	return value, nil
 }
@@ -227,18 +370,18 @@ func validateRepositoryInfoShape(operation *ast.OperationDefinition) error {
 	return nil
 }
 
-func validatePullRequestForBranchShape(operation *ast.OperationDefinition) error {
+func validatePullRequestForBranchShape(operation *ast.OperationDefinition) (pullRequestSelection, error) {
 	root, err := exactFields(operation.SelectionSet, "repository")
 	if err != nil {
-		return unsupportedPullRequestShape(err)
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
 	}
 	repositoryField := root["repository"]
 	if !variableArgument(repositoryField, "owner", "owner") || !variableArgument(repositoryField, "name", "repo") || len(repositoryField.Arguments) != 2 {
-		return unsupportedPullRequestShape(errors.New("repository arguments must be owner and repo variables"))
+		return pullRequestSelection{}, unsupportedPullRequestShape(errors.New("repository arguments must be owner and repo variables"))
 	}
 	repositoryFields, err := exactFields(repositoryField.SelectionSet, "pullRequests", "defaultBranchRef")
 	if err != nil {
-		return unsupportedPullRequestShape(err)
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
 	}
 	pulls := repositoryFields["pullRequests"]
 	if len(pulls.Arguments) != 4 ||
@@ -246,38 +389,91 @@ func validatePullRequestForBranchShape(operation *ast.OperationDefinition) error
 		!variableArgument(pulls, "states", "states") ||
 		!literalArgument(pulls, "first", ast.IntValue, "30") ||
 		!orderByArgument(pulls) {
-		return unsupportedPullRequestShape(errors.New("pullRequests arguments do not match the supported query"))
+		return pullRequestSelection{}, unsupportedPullRequestShape(errors.New("pullRequests arguments do not match the supported query"))
 	}
 	connectionFields, err := exactFields(pulls.SelectionSet, "nodes")
 	if err != nil {
-		return unsupportedPullRequestShape(err)
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
 	}
-	nodeFields, err := exactFields(connectionFields["nodes"].SelectionSet,
-		"number", "url", "state", "id", "baseRefName", "headRefName", "isCrossRepository", "headRepositoryOwner")
+	selection, err := validatePullRequestSelection(connectionFields["nodes"].SelectionSet)
 	if err != nil {
-		return unsupportedPullRequestShape(err)
-	}
-	for _, name := range []string{"number", "url", "state", "id", "baseRefName", "headRefName", "isCrossRepository"} {
-		if len(nodeFields[name].SelectionSet) != 0 {
-			return unsupportedPullRequestShape(fmt.Errorf("field %q cannot have subfields", name))
-		}
-	}
-	if err := validateHeadRepositoryOwner(nodeFields["headRepositoryOwner"].SelectionSet); err != nil {
-		return unsupportedPullRequestShape(err)
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
 	}
 	defaultBranchFields, err := exactFields(repositoryFields["defaultBranchRef"].SelectionSet, "name")
 	if err != nil || len(defaultBranchFields["name"].SelectionSet) != 0 {
 		if err == nil {
 			err = errors.New("defaultBranchRef.name cannot have subfields")
 		}
-		return unsupportedPullRequestShape(err)
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
 	}
-	return nil
+	return selection, nil
 }
 
-func validateHeadRepositoryOwner(selectionSet ast.SelectionSet) error {
+func validatePullRequestByNumberShape(operation *ast.OperationDefinition) (pullRequestSelection, error) {
+	root, err := exactFields(operation.SelectionSet, "repository")
+	if err != nil {
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
+	}
+	repositoryField := root["repository"]
+	if len(repositoryField.Arguments) != 2 || !variableArgument(repositoryField, "owner", "owner") || !variableArgument(repositoryField, "name", "repo") {
+		return pullRequestSelection{}, unsupportedPullRequestShape(errors.New("repository arguments must be owner and repo variables"))
+	}
+	repositoryFields, err := exactFields(repositoryField.SelectionSet, "pullRequest")
+	if err != nil {
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
+	}
+	pull := repositoryFields["pullRequest"]
+	if len(pull.Arguments) != 1 || !variableArgument(pull, "number", "pr_number") {
+		return pullRequestSelection{}, unsupportedPullRequestShape(errors.New("pullRequest.number must use pr_number"))
+	}
+	selection, err := validatePullRequestSelection(pull.SelectionSet)
+	if err != nil {
+		return pullRequestSelection{}, unsupportedPullRequestShape(err)
+	}
+	return selection, nil
+}
+
+func validatePullRequestSelection(selectionSet ast.SelectionSet) (pullRequestSelection, error) {
+	allowed := map[string]bool{
+		"number": true, "url": true, "state": true, "id": true, "baseRefName": true, "headRefName": true,
+		"headRefOid": true, "mergedAt": true, "closedAt": true, "isCrossRepository": true,
+		"headRepository": true, "headRepositoryOwner": true, "mergeable": true, "mergeStateStatus": true, "reviewDecision": true,
+	}
+	result := pullRequestSelection{Fields: fieldSet{}}
+	if len(selectionSet) == 0 {
+		return result, errors.New("pull request selection must not be empty")
+	}
+	for _, item := range selectionSet {
+		field, ok := item.(*ast.Field)
+		if !ok || field.Alias != field.Name || !allowed[field.Name] || result.Fields.Has(field.Name) {
+			return result, errors.New("unsupported pull request field selection")
+		}
+		result.Fields[field.Name] = struct{}{}
+		switch field.Name {
+		case "headRepository":
+			fields, err := exactFieldsSubset(field.SelectionSet, "id", "name", "nameWithOwner")
+			if err != nil {
+				return result, err
+			}
+			result.HeadRepository = fields
+		case "headRepositoryOwner":
+			fields, err := validateHeadRepositoryOwner(field.SelectionSet)
+			if err != nil {
+				return result, err
+			}
+			result.HeadRepositoryOwner = fields
+		default:
+			if len(field.SelectionSet) != 0 {
+				return result, fmt.Errorf("field %q cannot have subfields", field.Name)
+			}
+		}
+	}
+	return result, nil
+}
+
+func validateHeadRepositoryOwner(selectionSet ast.SelectionSet) (fieldSet, error) {
 	if len(selectionSet) != 3 {
-		return errors.New("headRepositoryOwner must select id, login, and the User name fragment")
+		return nil, errors.New("headRepositoryOwner must select id, login, and the User name fragment")
 	}
 	fields := make(ast.SelectionSet, 0, 2)
 	var userFragment *ast.InlineFragment
@@ -287,25 +483,47 @@ func validateHeadRepositoryOwner(selectionSet ast.SelectionSet) error {
 			fields = append(fields, value)
 		case *ast.InlineFragment:
 			if userFragment != nil {
-				return errors.New("multiple inline fragments are not supported")
+				return nil, errors.New("multiple inline fragments are not supported")
 			}
 			userFragment = value
 		default:
-			return errors.New("fragment spreads are not supported")
+			return nil, errors.New("fragment spreads are not supported")
 		}
 	}
 	ownerFields, err := exactFields(fields, "id", "login")
 	if err != nil || len(ownerFields["id"].SelectionSet) != 0 || len(ownerFields["login"].SelectionSet) != 0 {
-		return errors.New("headRepositoryOwner scalar selection is unsupported")
+		return nil, errors.New("headRepositoryOwner scalar selection is unsupported")
 	}
 	if userFragment == nil || userFragment.TypeCondition != "User" {
-		return errors.New("headRepositoryOwner must include an inline User fragment")
+		return nil, errors.New("headRepositoryOwner must include an inline User fragment")
 	}
 	userFields, err := exactFields(userFragment.SelectionSet, "name")
 	if err != nil || len(userFields["name"].SelectionSet) != 0 {
-		return errors.New("User fragment must select name")
+		return nil, errors.New("User fragment must select name")
 	}
-	return nil
+	return fieldSet{"id": {}, "login": {}, "name": {}}, nil
+}
+
+func exactFieldsSubset(selectionSet ast.SelectionSet, names ...string) (fieldSet, error) {
+	if len(selectionSet) == 0 {
+		return nil, errors.New("field selection must not be empty")
+	}
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		allowed[name] = struct{}{}
+	}
+	result := fieldSet{}
+	for _, item := range selectionSet {
+		field, ok := item.(*ast.Field)
+		if !ok || field.Alias != field.Name || len(field.SelectionSet) != 0 {
+			return nil, errors.New("unsupported nested field selection")
+		}
+		if _, ok := allowed[field.Name]; !ok || result.Has(field.Name) {
+			return nil, errors.New("unsupported nested field selection")
+		}
+		result[field.Name] = struct{}{}
+	}
+	return result, nil
 }
 
 func literalArgument(field *ast.Field, name string, kind ast.ValueKind, raw string) bool {

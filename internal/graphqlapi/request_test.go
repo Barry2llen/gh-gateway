@@ -20,6 +20,53 @@ const pullRequestForBranchQuery = `query PullRequestForBranch($owner: String!, $
   }
 }`
 
+const expandedPullRequestForBranchQuery = `query PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!]) {
+  repository(name: $repo, owner: $owner) {
+    defaultBranchRef { name }
+    pullRequests(orderBy: {direction: DESC, field: CREATED_AT}, first: 30, states: $states, headRefName: $headRefName) {
+      nodes {
+        reviewDecision mergeStateStatus mergeable
+        headRepositoryOwner { login id ... on User { name } }
+        headRepository { nameWithOwner id name }
+        headRefOid closedAt mergedAt state url number
+        isCrossRepository headRefName baseRefName id
+      }
+    }
+  }
+}`
+
+const pullRequestByNumberQuery = `query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr_number) {
+      number url state mergedAt closedAt headRefName headRefOid
+      headRepository { id name nameWithOwner }
+      headRepositoryOwner { id login ... on User { name } }
+      mergeable mergeStateStatus reviewDecision id
+    }
+  }
+}`
+
+const pullRequestStatusChecksQuery = `query PullRequestStatusChecks($id:ID!,$endCursor:String){node(id:$id){...on PullRequest{statusCheckRollup:commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100,after:$endCursor){nodes{__typename ...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestId:$id)} ...on CheckRun{name checkSuite{workflowRun{workflow{name}}} status conclusion startedAt completedAt detailsUrl isRequired(pullRequestId:$id)}} pageInfo{hasNextPage endCursor}}}}}}}}}`
+
+func TestParsePullRequestStatusChecks(t *testing.T) {
+	t.Parallel()
+	id := encodePullRequestID("foo", "bar", 12)
+	got, err := parsePullRequestStatusChecks(graphQLRequest{Query: pullRequestStatusChecksQuery, Variables: map[string]json.RawMessage{"id": json.RawMessage(`"` + id + `"`), "endCursor": json.RawMessage(`null`)}})
+	if err != nil || got.ID != id || got.Cursor != "" {
+		t.Fatalf("request/error = %#v/%v", got, err)
+	}
+}
+
+func TestParseFeatureDetectionOperations(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{`query PullRequest_fields{PullRequest:__type(name:"PullRequest"){fields(includeDeprecated:true){name}} StatusCheckRollupContextConnection:__type(name:"StatusCheckRollupContextConnection"){fields(includeDeprecated:true){name}}}`, `query PullRequest_fields2{WorkflowRun:__type(name:"WorkflowRun"){fields(includeDeprecated:true){name}}}`} {
+		operation, err := parseOperation(graphQLRequest{Query: query})
+		if err != nil || operation.Name == "" {
+			t.Fatalf("operation/error=%#v/%v", operation, err)
+		}
+	}
+}
+
 func TestParseRepositoryInfoRequest(t *testing.T) {
 	t.Parallel()
 
@@ -122,5 +169,59 @@ func TestParsePullRequestForBranchRejectsNonNullStates(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("parsePullRequestForBranch() error = nil, want error")
+	}
+}
+
+func TestParseExpandedPullRequestForBranchIgnoresFieldOrdering(t *testing.T) {
+	t.Parallel()
+
+	got, err := parsePullRequestForBranch(graphQLRequest{
+		Query: expandedPullRequestForBranchQuery,
+		Variables: map[string]json.RawMessage{
+			"owner": json.RawMessage(`"foo"`), "repo": json.RawMessage(`"bar"`),
+			"headRefName": json.RawMessage(`"feature"`), "states": json.RawMessage(`null`),
+		},
+	})
+	if err != nil {
+		t.Fatalf("parsePullRequestForBranch() error = %v", err)
+	}
+	for _, field := range []string{"mergedAt", "closedAt", "headRefOid", "headRepository", "mergeable", "mergeStateStatus", "reviewDecision"} {
+		if !got.Fields.Has(field) {
+			t.Fatalf("fields = %#v, missing %q", got.Fields, field)
+		}
+	}
+}
+
+func TestParsePullRequestByNumberSupportsMetadataAndChecksSelections(t *testing.T) {
+	t.Parallel()
+
+	for _, query := range []string{
+		pullRequestByNumberQuery,
+		`query PullRequestByNumber($owner:String!,$repo:String!,$pr_number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr_number){headRefName number id}}}`,
+	} {
+		got, err := parsePullRequestByNumber(graphQLRequest{
+			Query: query,
+			Variables: map[string]json.RawMessage{
+				"owner": json.RawMessage(`"foo"`), "repo": json.RawMessage(`"bar"`), "pr_number": json.RawMessage(`12`),
+			},
+		})
+		if err != nil {
+			t.Fatalf("parsePullRequestByNumber() error = %v", err)
+		}
+		if got.Owner != "foo" || got.Repo != "bar" || got.Number != 12 || !got.Fields.Has("id") {
+			t.Fatalf("parsed request = %#v", got)
+		}
+	}
+}
+
+func TestPullRequestSelectionRejectsUnknownField(t *testing.T) {
+	t.Parallel()
+
+	query := `query PullRequestByNumber($owner:String!,$repo:String!,$pr_number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr_number){id title}}}`
+	_, err := parsePullRequestByNumber(graphQLRequest{Query: query, Variables: map[string]json.RawMessage{
+		"owner": json.RawMessage(`"foo"`), "repo": json.RawMessage(`"bar"`), "pr_number": json.RawMessage(`1`),
+	}})
+	if err == nil {
+		t.Fatal("parsePullRequestByNumber() error = nil")
 	}
 }

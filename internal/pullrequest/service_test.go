@@ -9,6 +9,8 @@ import (
 type providerStub struct {
 	metadata RepositoryMetadata
 	pages    map[int]Page
+	pull     PullRequest
+	pullErr  error
 	seen     []int
 	seenAuth []string
 }
@@ -25,6 +27,27 @@ func (p *providerStub) ListPullRequests(_ context.Context, _, _ string, page, _ 
 		return Page{}, fmt.Errorf("unexpected page %d", page)
 	}
 	return result, nil
+}
+
+func (p *providerStub) GetPullRequest(_ context.Context, owner, repo string, number int64, authorization string) (PullRequest, error) {
+	p.seenAuth = append(p.seenAuth, authorization)
+	if owner != "foo" || repo != "bar" || number != 12 {
+		return PullRequest{}, fmt.Errorf("unexpected lookup %s/%s#%d", owner, repo, number)
+	}
+	return p.pull, p.pullErr
+}
+
+func TestServiceFindByNumber(t *testing.T) {
+	t.Parallel()
+
+	provider := &providerStub{pull: PullRequest{Number: 12, HeadRefName: "feature"}}
+	got, err := NewService(provider).FindByNumber(context.Background(), NumberQuery{Owner: "foo", Repo: "bar", Number: 12, Authorization: "token incoming"})
+	if err != nil {
+		t.Fatalf("FindByNumber() error = %v", err)
+	}
+	if got.Number != 12 || fmt.Sprint(provider.seenAuth) != "[token incoming]" {
+		t.Fatalf("result/auth = %#v/%v", got, provider.seenAuth)
+	}
 }
 
 func TestServiceFindForCommitMatchesHeadAndMergedCommit(t *testing.T) {

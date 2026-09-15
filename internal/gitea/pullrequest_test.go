@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"gh-gateway/internal/pullrequest"
 )
@@ -82,6 +83,42 @@ func TestClientGetsRepositoryMetadataAndMapsPullRequests(t *testing.T) {
 	}
 	if merged.State != pullrequest.StateMerged || merged.HeadRefName != "old-feature" || merged.BaseRefName != "main" || merged.HeadSHA != "head-merged" || merged.MergeCommitSHA != "merge-sha" {
 		t.Fatalf("merged PR = %#v", merged)
+	}
+}
+
+func TestClientGetsPullRequestAndMapsExpandedMetadata(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/foo/bar/pulls/12" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{
+		  "id":101,"number":12,"html_url":"https://git.example.test/foo/bar/pulls/12",
+		  "state":"closed","merged":true,"draft":false,"mergeable":true,
+		  "merged_at":"2026-09-15T01:02:03Z","closed_at":"2026-09-15T01:02:04Z",
+		  "base":{"label":"main","repo_id":10},
+		  "head":{"label":"feature","sha":"abc123","repo_id":20,"repo":{"id":20,"name":"bar","full_name":"forker/bar","owner":{"id":2,"login":"forker","full_name":"Fork User"}}}
+		}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "", server.Client())
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	got, err := client.GetPullRequest(context.Background(), "foo", "bar", 12, "token incoming")
+	if err != nil {
+		t.Fatalf("GetPullRequest() error = %v", err)
+	}
+	if got.State != pullrequest.StateMerged || got.HeadSHA != "abc123" || got.HeadRepository == nil || got.HeadRepository.NameWithOwner != "forker/bar" {
+		t.Fatalf("pull request = %#v", got)
+	}
+	if got.Mergeable != pullrequest.Mergeable || got.MergeStateStatus != pullrequest.MergeStateUnknown || got.ReviewDecision != nil {
+		t.Fatalf("conservative metadata = %#v", got)
+	}
+	if got.MergedAt == nil || !got.MergedAt.Equal(time.Date(2026, 9, 15, 1, 2, 3, 0, time.UTC)) || got.ClosedAt == nil {
+		t.Fatalf("timestamps = %v/%v", got.MergedAt, got.ClosedAt)
 	}
 }
 

@@ -129,7 +129,7 @@ func TestPullRequestForBranchVerticalSlice(t *testing.T) {
 		t.Fatalf("status/requests = %d/%d, want 200/2", response.Code, requests)
 	}
 	body := response.Body.String()
-	for _, want := range []string{`"number":1`, `"url":"https://git.example.test/foo/bar/pulls/1"`, `"state":"OPEN"`, `"id":"11"`, `"name":"main"`} {
+	for _, want := range []string{`"number":1`, `"url":"https://git.example.test/foo/bar/pulls/1"`, `"state":"OPEN"`, `"id":"` + encodePullRequestID("foo", "bar", 1) + `"`, `"name":"main"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("body = %s, missing %s", body, want)
 		}

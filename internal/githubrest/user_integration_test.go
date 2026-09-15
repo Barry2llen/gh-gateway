@@ -29,7 +29,7 @@ func TestAuthenticatedUserVerticalSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	router := gateway.NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), NewUserHandler(userdomain.NewService(provider)))
+	router := gateway.NewRouter(http.NotFoundHandler(), NewRouter(Handlers{AuthenticatedUser: NewUserHandler(userdomain.NewService(provider))}))
 	request := httptest.NewRequest(http.MethodGet, "/api/v3/user", nil)
 	request.Header.Set("Authorization", "token gateway-request")
 	response := httptest.NewRecorder()
@@ -66,7 +66,7 @@ func TestAuthenticatedUserVerticalSliceHidesGiteaErrors(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewClient() error = %v", err)
 			}
-			router := gateway.NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), NewUserHandler(userdomain.NewService(provider)))
+			router := gateway.NewRouter(http.NotFoundHandler(), NewRouter(Handlers{AuthenticatedUser: NewUserHandler(userdomain.NewService(provider))}))
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v3/user", nil))
 			if response.Code != tt.wantStatus {
@@ -91,7 +91,7 @@ func TestAuthenticatedUserVerticalSliceMapsTransportErrorToBadGateway(t *testing
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	router := gateway.NewRouter(http.NotFoundHandler(), http.NotFoundHandler(), NewUserHandler(userdomain.NewService(provider)))
+	router := gateway.NewRouter(http.NotFoundHandler(), NewRouter(Handlers{AuthenticatedUser: NewUserHandler(userdomain.NewService(provider))}))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v3/user", nil))
 	if response.Code != http.StatusBadGateway {

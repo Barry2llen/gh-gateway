@@ -3,6 +3,7 @@ package pullrequest
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 const MaxCandidates = 30
@@ -26,6 +27,28 @@ type RepositoryOwner struct {
 	Name  string
 }
 
+type Repository struct {
+	ID            string
+	Name          string
+	NameWithOwner string
+}
+
+type MergeableState string
+
+const (
+	Mergeable        MergeableState = "MERGEABLE"
+	MergeableUnknown MergeableState = "UNKNOWN"
+)
+
+type MergeStateStatus string
+
+const (
+	MergeStateDraft   MergeStateStatus = "DRAFT"
+	MergeStateUnknown MergeStateStatus = "UNKNOWN"
+)
+
+type ReviewDecision string
+
 type PullRequest struct {
 	Number              int64
 	URL                 string
@@ -35,6 +58,12 @@ type PullRequest struct {
 	HeadRefName         string
 	HeadSHA             string
 	MergeCommitSHA      string
+	MergedAt            *time.Time
+	ClosedAt            *time.Time
+	Mergeable           MergeableState
+	MergeStateStatus    MergeStateStatus
+	ReviewDecision      *ReviewDecision
+	HeadRepository      *Repository
 	IsCrossRepository   bool
 	HeadRepositoryOwner *RepositoryOwner
 }
@@ -62,6 +91,13 @@ type CommitQuery struct {
 	Authorization string
 }
 
+type NumberQuery struct {
+	Owner         string
+	Repo          string
+	Number        int64
+	Authorization string
+}
+
 type Result struct {
 	Nodes         []PullRequest
 	DefaultBranch string
@@ -69,6 +105,7 @@ type Result struct {
 
 type Provider interface {
 	GetRepositoryMetadata(ctx context.Context, owner, repo, authorization string) (RepositoryMetadata, error)
+	GetPullRequest(ctx context.Context, owner, repo string, number int64, authorization string) (PullRequest, error)
 	ListPullRequests(ctx context.Context, owner, repo string, page, limit int, authorization string) (Page, error)
 }
 
@@ -78,6 +115,10 @@ type Service struct {
 
 func NewService(provider Provider) *Service {
 	return &Service{provider: provider}
+}
+
+func (s *Service) FindByNumber(ctx context.Context, query NumberQuery) (PullRequest, error) {
+	return s.provider.GetPullRequest(ctx, query.Owner, query.Repo, query.Number, query.Authorization)
 }
 
 func (s *Service) FindForBranch(ctx context.Context, query Query) (Result, error) {

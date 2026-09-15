@@ -81,6 +81,22 @@ case "${pr_status}" in
   *) cat /tmp/create-pr.json >&2; fail "pull request creation returned HTTP ${pr_status}" ;;
 esac
 
+collaborator_status="$(curl -sS -o /tmp/add-collaborator.json -w '%{http_code}' \
+  -X PUT -H "Authorization: token ${gateway_token}" -H 'Content-Type: application/json' \
+  -d '{"permission":"write"}' "${gitea_url}/repos/gateway/bar/collaborators/forker")"
+[ "${collaborator_status}" = "204" ] || fail "collaborator creation returned HTTP ${collaborator_status}"
+
+issue_comment_status="$(curl -sS -o /tmp/create-issue-comment.json -w '%{http_code}' \
+  -H "Authorization: token ${forker_token}" -H 'Content-Type: application/json' \
+  -d '{"body":"Conversation feedback from forker."}' "${gitea_url}/repos/gateway/bar/issues/1/comments")"
+[ "${issue_comment_status}" = "201" ] || fail "issue comment creation returned HTTP ${issue_comment_status}"
+
+review_status="$(curl -sS -o /tmp/create-review.json -w '%{http_code}' \
+  -H "Authorization: token ${forker_token}" -H 'Content-Type: application/json' \
+  -d '{"event":"COMMENT","body":"Published review from forker.","comments":[{"path":"feature.txt","body":"Inline feedback from forker.","new_position":1}]}' \
+  "${gitea_url}/repos/gateway/bar/pulls/1/reviews")"
+[ "${review_status}" = "200" ] || { cat /tmp/create-review.json >&2; fail "review creation returned HTTP ${review_status}"; }
+
 fork_status="$(curl -sS -o /tmp/create-fork.json -w '%{http_code}' \
   -H "Authorization: token ${forker_token}" \
   -H 'Content-Type: application/json' \
@@ -164,6 +180,59 @@ echo "${pr_json}" | jq -e '
 ' >/dev/null || fail "unexpected pull request gh output"
 
 head_sha="$(git -C /tmp/pr rev-parse HEAD)"
+
+for status_spec in 'success ci/success' 'failure ci/failure' 'pending ci/pending'; do
+  status_state="${status_spec%% *}"
+  status_context="${status_spec#* }"
+  status_body="$(jq -nc --arg state "${status_state}" --arg context "${status_context}" '{state:$state,context:$context,description:("E2E " + $state),target_url:("https://ci.example.test/" + $context)}')"
+  create_commit_status="$(curl -sS -o /tmp/create-status.json -w '%{http_code}' \
+    -H "Authorization: token ${gateway_token}" -H 'Content-Type: application/json' -d "${status_body}" \
+    "${gitea_url}/repos/gateway/bar/statuses/${head_sha}")"
+  [ "${create_commit_status}" = "201" ] || { cat /tmp/create-status.json >&2; fail "commit status creation returned HTTP ${create_commit_status}"; }
+done
+
+expanded_pr_json="$(cd /tmp/pr && gh pr view 1 --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision)"
+echo "expanded pull request: ${expanded_pr_json}"
+echo "${expanded_pr_json}" | jq -e --arg sha "${head_sha}" '
+  .number == 1 and .state == "OPEN" and .headRefName == "feature" and .headRefOid == $sha and
+  .headRepository.nameWithOwner == "gateway/bar" and .headRepositoryOwner.login == "gateway" and
+  (.mergeable == "UNKNOWN" or .mergeable == "MERGEABLE") and .mergeStateStatus == "UNKNOWN" and .reviewDecision == ""
+' >/dev/null || fail "unexpected expanded pull request output"
+
+conversation_json="$(gh api 'repos/gateway/bar/issues/1/comments?per_page=100&page=1')"
+echo "conversation comments: ${conversation_json}"
+echo "${conversation_json}" | jq -e 'length == 1 and .[0].user.login == "forker" and .[0].author_association == "COLLABORATOR"' >/dev/null \
+  || fail "unexpected conversation comments output"
+
+reviews_json="$(gh api 'repos/gateway/bar/pulls/1/reviews?per_page=100&page=1')"
+echo "reviews: ${reviews_json}"
+echo "${reviews_json}" | jq -e 'length == 1 and .[0].user.login == "forker" and .[0].state == "COMMENTED" and .[0].author_association == "COLLABORATOR"' >/dev/null \
+  || fail "unexpected reviews output"
+
+inline_json="$(gh api 'repos/gateway/bar/pulls/1/comments?per_page=100&page=1')"
+echo "inline review comments: ${inline_json}"
+echo "${inline_json}" | jq -e 'length == 1 and .[0].user.login == "forker" and .[0].path == "feature.txt" and .[0].pull_request_review_id == 1 and .[0].author_association == "COLLABORATOR"' >/dev/null \
+  || fail "unexpected inline review comments output"
+
+checks_json="$(gh -R gateway/bar pr checks 1 --json name,state,bucket,link,workflow,event,startedAt,completedAt)"
+echo "checks 2.95.0: ${checks_json}"
+echo "${checks_json}" | jq -e '[.[].bucket] | (map(select(. == "pass"))|length)==1 and (map(select(. == "fail"))|length)==1 and (map(select(. == "pending"))|length)==1' >/dev/null \
+  || fail "unexpected gh 2.95.0 checks output"
+
+gh_p1a=/opt/gh-2.100.0/bin/gh
+"${gh_p1a}" --version
+expanded_pr_210_json="$(cd /tmp/pr && "${gh_p1a}" pr view 1 --json number,url,state,mergedAt,closedAt,headRefName,headRefOid,headRepository,headRepositoryOwner,mergeable,mergeStateStatus,reviewDecision)"
+echo "expanded pull request 2.100.0: ${expanded_pr_210_json}"
+echo "${expanded_pr_210_json}" | jq -e --arg sha "${head_sha}" '.number == 1 and .headRefOid == $sha and .mergeStateStatus == "UNKNOWN"' >/dev/null \
+  || fail "unexpected gh 2.100.0 expanded PR output"
+checks_210_json="$(GH_DEBUG=api "${gh_p1a}" -R gateway/bar pr checks 1 --json name,state,bucket,link,workflow,event,startedAt,completedAt 2>/tmp/gh-2.100-checks-debug.log)"
+echo "checks 2.100.0: ${checks_210_json}"
+echo "${checks_210_json}" | jq -e 'length == 3' >/dev/null || fail "unexpected gh 2.100.0 checks output"
+for operation in PullRequestByNumber PullRequest_fields PullRequest_fields2 PullRequestStatusChecks; do
+  grep -q "${operation}" /tmp/gh-2.100-checks-debug.log || fail "gh 2.100.0 debug log missing ${operation}"
+done
+echo "checks 2.100.0 operations: PullRequestByNumber, PullRequest_fields, PullRequest_fields2, PullRequestStatusChecks"
+
 commit_pulls_json="$(cd /tmp/pr && gh api -H "Accept: application/vnd.github+json" \
   "repos/gateway/bar/commits/${head_sha}/pulls")"
 echo "commit pull requests: ${commit_pulls_json}"
@@ -196,5 +265,24 @@ wrong_rest_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
   "https://git.example.test/repos/gateway/bar/commits/${head_sha}/pulls")"
 [ "${wrong_rest_path_status}" = "404" ] \
   || fail "/repos commit lookup returned HTTP ${wrong_rest_path_status}, want 404"
+
+watch_log_lines="$(wc -l < "${caddy_access_log}")"
+set +e
+PATH="/opt/gh-2.100.0/bin:${PATH}" python3 /opt/babysit-pr/gh_pr_watch.py --once --pr 1 --repo gateway/bar --state-file /tmp/p1a-watcher-state.json >/tmp/watcher-output.json 2>/tmp/watcher-error.txt
+watcher_status="$?"
+set -e
+[ "${watcher_status}" -ne 0 ] || fail "babysit-pr unexpectedly completed despite unsupported Actions"
+echo "babysit-pr --once stderr: $(tr '\n' ' ' </tmp/watcher-error.txt)"
+attempts=0
+until tail -n "+$((watch_log_lines + 1))" "${caddy_access_log}" | jq -s -e '
+  any(.[]; .request.uri == "/api/v3/user") and
+  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/issues/1/comments")) and
+  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/pulls/1/reviews")) and
+  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/pulls/1/comments")) and
+  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/actions/runs"))
+' >/dev/null 2>&1; do attempts=$((attempts+1)); [ "${attempts}" -lt 30 ] || fail "watcher request sequence was not recorded"; sleep 1; done
+tail -n "+$((watch_log_lines + 1))" "${caddy_access_log}" | jq -s -e 'all(.[]; (.request.uri | contains("/jobs") or contains("/logs") or contains("/rerun")) | not)' >/dev/null \
+  || fail "watcher crossed beyond the first unsupported Actions request"
+echo "babysit-pr --once reached unsupported P1-B Actions after all P1-A requests, as expected."
 
 echo "Docker Compose E2E passed."

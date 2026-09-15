@@ -65,6 +65,8 @@ services:
       dockerfile: docker/e2e/Dockerfile
       args:
         GH_VERSION: 2.95.0
+        GH_P1A_VERSION: 2.100.0
+        BABYSIT_PR_COMMIT: b13164d86f9a70adc48d22f4a5a07ed0c001a1d0
     volumes:
       - e2e-state:/state:ro
       - caddy-data:/caddy-data:ro

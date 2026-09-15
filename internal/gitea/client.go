@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
@@ -53,6 +54,10 @@ type pullRequestDTO struct {
 	HTMLURL        string     `json:"html_url"`
 	State          string     `json:"state"`
 	Merged         bool       `json:"merged"`
+	Draft          bool       `json:"draft"`
+	Mergeable      bool       `json:"mergeable"`
+	MergedAt       *time.Time `json:"merged_at"`
+	ClosedAt       *time.Time `json:"closed_at"`
 	MergeCommitSHA *string    `json:"merge_commit_sha"`
 	Base           *branchDTO `json:"base"`
 	Head           *branchDTO `json:"head"`
@@ -66,7 +71,10 @@ type branchDTO struct {
 }
 
 type branchRepositoryDTO struct {
-	Owner *ownerDTO `json:"owner"`
+	ID       int64     `json:"id"`
+	Name     string    `json:"name"`
+	FullName string    `json:"full_name"`
+	Owner    *ownerDTO `json:"owner"`
 }
 
 func NewClient(baseURL, configuredToken string, httpClient *http.Client) (*Client, error) {
@@ -239,6 +247,29 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, name string, page,
 	}, nil
 }
 
+func (c *Client) GetPullRequest(ctx context.Context, owner, name string, number int64, authorization string) (pullrequest.PullRequest, error) {
+	endpoint := c.baseURL.JoinPath("api", "v1", "repos", owner, name, "pulls", strconv.FormatInt(number, 10))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return pullrequest.PullRequest{}, fmt.Errorf("create Gitea pull request request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	c.applyAuthorization(request, authorization)
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return pullrequest.PullRequest{}, fmt.Errorf("request Gitea pull request: %w", err)
+	}
+	defer response.Body.Close()
+	if err := pullRequestStatusError(response); err != nil {
+		return pullrequest.PullRequest{}, err
+	}
+	var dto pullRequestDTO
+	if err := json.NewDecoder(io.LimitReader(response.Body, maxResponseBytes)).Decode(&dto); err != nil {
+		return pullrequest.PullRequest{}, fmt.Errorf("decode Gitea pull request response: %w", err)
+	}
+	return mapPullRequest(dto)
+}
+
 func (c *Client) applyAuthorization(request *http.Request, incoming string) {
 	if c.configuredToken != "" {
 		request.Header.Set("Authorization", "token "+c.configuredToken)
@@ -275,12 +306,26 @@ func mapPullRequest(dto pullRequestDTO) (pullrequest.PullRequest, error) {
 		return pullrequest.PullRequest{}, fmt.Errorf("Gitea pull request response has unsupported state %q", dto.State)
 	}
 	var headOwner *pullrequest.RepositoryOwner
+	var headRepository *pullrequest.Repository
 	if dto.Head.Repo != nil && dto.Head.Repo.Owner != nil {
 		headOwner = &pullrequest.RepositoryOwner{
 			ID:    strconv.FormatInt(dto.Head.Repo.Owner.ID, 10),
 			Login: dto.Head.Repo.Owner.Login,
 			Name:  dto.Head.Repo.Owner.FullName,
 		}
+	}
+	if dto.Head.Repo != nil {
+		headRepository = &pullrequest.Repository{
+			ID: strconv.FormatInt(dto.Head.Repo.ID, 10), Name: dto.Head.Repo.Name, NameWithOwner: dto.Head.Repo.FullName,
+		}
+	}
+	mergeable := pullrequest.MergeableUnknown
+	if dto.Mergeable {
+		mergeable = pullrequest.Mergeable
+	}
+	mergeState := pullrequest.MergeStateUnknown
+	if dto.Draft {
+		mergeState = pullrequest.MergeStateDraft
 	}
 	return pullrequest.PullRequest{
 		Number:              dto.Number,
@@ -291,6 +336,12 @@ func mapPullRequest(dto pullRequestDTO) (pullrequest.PullRequest, error) {
 		HeadRefName:         dto.Head.Label,
 		HeadSHA:             dto.Head.SHA,
 		MergeCommitSHA:      stringValue(dto.MergeCommitSHA),
+		MergedAt:            dto.MergedAt,
+		ClosedAt:            dto.ClosedAt,
+		Mergeable:           mergeable,
+		MergeStateStatus:    mergeState,
+		ReviewDecision:      nil,
+		HeadRepository:      headRepository,
 		IsCrossRepository:   dto.Base.RepoID != dto.Head.RepoID,
 		HeadRepositoryOwner: headOwner,
 	}, nil

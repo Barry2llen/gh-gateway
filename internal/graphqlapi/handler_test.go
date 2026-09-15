@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
+	"gh-gateway/internal/statuscheck"
 )
 
 type serviceStub struct {
@@ -20,15 +22,141 @@ type serviceStub struct {
 }
 
 type pullRequestServiceStub struct {
-	find func(context.Context, pullrequest.Query) (pullrequest.Result, error)
+	find         func(context.Context, pullrequest.Query) (pullrequest.Result, error)
+	findByNumber func(context.Context, pullrequest.NumberQuery) (pullrequest.PullRequest, error)
+}
+
+type statusCheckServiceStub struct {
+	result statuscheck.Result
+	err    error
+	query  statuscheck.Query
+}
+
+func (s *statusCheckServiceStub) Get(_ context.Context, query statuscheck.Query) (statuscheck.Result, error) {
+	s.query = query
+	return s.result, s.err
 }
 
 func (s pullRequestServiceStub) FindForBranch(ctx context.Context, query pullrequest.Query) (pullrequest.Result, error) {
 	return s.find(ctx, query)
 }
 
+func (s pullRequestServiceStub) FindByNumber(ctx context.Context, query pullrequest.NumberQuery) (pullrequest.PullRequest, error) {
+	return s.findByNumber(ctx, query)
+}
+
 func (s serviceStub) Get(ctx context.Context, owner, name, authorization string) (repository.Repository, error) {
 	return s.get(ctx, owner, name, authorization)
+}
+
+func TestHandlerDispatchesPullRequestByNumberWithExpandedMetadata(t *testing.T) {
+	t.Parallel()
+
+	mergedAt := mustTime(t, "2026-09-15T01:02:03Z")
+	service := pullRequestServiceStub{findByNumber: func(_ context.Context, query pullrequest.NumberQuery) (pullrequest.PullRequest, error) {
+		if query.Owner != "foo" || query.Repo != "bar" || query.Number != 12 || query.Authorization != "token secret" {
+			t.Fatalf("query = %#v", query)
+		}
+		return pullrequest.PullRequest{
+			Number: 12, URL: "https://git.example.test/foo/bar/pulls/12", State: pullrequest.StateMerged,
+			MergedAt: &mergedAt, HeadRefName: "feature", HeadSHA: "abc123", Mergeable: pullrequest.Mergeable,
+			MergeStateStatus:    pullrequest.MergeStateUnknown,
+			HeadRepository:      &pullrequest.Repository{ID: "20", Name: "bar", NameWithOwner: "forker/bar"},
+			HeadRepositoryOwner: &pullrequest.RepositoryOwner{ID: "2", Login: "forker", Name: "Fork User"},
+		}, nil
+	}}
+	response := performGraphQLRequest(t, NewRouter(nil, service), pullRequestByNumberQuery, "PullRequestByNumber", "token secret")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status/body = %d/%s", response.Code, response.Body.String())
+	}
+	body := response.Body.String()
+	for _, want := range []string{`"number":12`, `"state":"MERGED"`, `"headRefOid":"abc123"`, `"nameWithOwner":"forker/bar"`, `"mergeable":"MERGEABLE"`, `"mergeStateStatus":"UNKNOWN"`, `"reviewDecision":null`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body = %s, missing %s", body, want)
+		}
+	}
+	if strings.Contains(body, `"baseRefName"`) {
+		t.Fatalf("body returned unselected field: %s", body)
+	}
+}
+
+func mustTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+func TestHandlerSupportsChecksFeatureDetection(t *testing.T) {
+	t.Parallel()
+	queries := []struct{ query, want, absent string }{{`query PullRequest_fields{PullRequest:__type(name:"PullRequest"){fields(includeDeprecated:true){name}} StatusCheckRollupContextConnection:__type(name:"StatusCheckRollupContextConnection"){fields(includeDeprecated:true){name}}}`, `"PullRequest"`, `isInMergeQueue`}, {`query PullRequest_fields2{WorkflowRun:__type(name:"WorkflowRun"){fields(includeDeprecated:true){name}}}`, `"WorkflowRun"`, `"event"`}}
+	for _, tt := range queries {
+		response := performGraphQLRequest(t, NewRouter(nil, nil, nil), tt.query, "", "")
+		if response.Code != 200 || !strings.Contains(response.Body.String(), tt.want) || strings.Contains(response.Body.String(), tt.absent) {
+			t.Fatalf("body = %s", response.Body.String())
+		}
+	}
+}
+
+func TestHandlerReturnsStatusContextsWithCursorPageInfo(t *testing.T) {
+	t.Parallel()
+	contexts := make([]statuscheck.Context, 101)
+	for i := range contexts {
+		contexts[i] = statuscheck.Context{Name: fmt.Sprintf("ctx-%03d", i), State: statuscheck.StateSuccess, CreatedAt: time.Date(2026, 9, 15, 1, 2, 3, 0, time.UTC)}
+	}
+	id := encodePullRequestID("foo", "bar", 12)
+	service := &statusCheckServiceStub{result: statuscheck.Result{HeadSHA: "head", Contexts: contexts}}
+	response := performGraphQLRequestWithVariables(t, NewRouter(nil, nil, service), pullRequestStatusChecksQuery, "PullRequestStatusChecks", map[string]any{"id": id, "endCursor": nil}, "token")
+	body := response.Body.String()
+	if response.Code != 200 || !strings.Contains(body, `"__typename":"StatusContext"`) || !strings.Contains(body, `"hasNextPage":true`) || !strings.Contains(body, `"isRequired":false`) {
+		t.Fatalf("body = %s", body)
+	}
+	if service.query.Owner != "foo" || service.query.Repo != "bar" || service.query.Number != 12 || service.query.Authorization != "token" {
+		t.Fatalf("query = %#v", service.query)
+	}
+}
+
+func TestHandlerStatusCursorAdvancesWithoutRepeating(t *testing.T) {
+	t.Parallel()
+	contexts := make([]statuscheck.Context, 101)
+	for i := range contexts {
+		contexts[i] = statuscheck.Context{Name: fmt.Sprintf("ctx-%03d", i), State: statuscheck.StateSuccess, CreatedAt: time.Now().UTC()}
+	}
+	id := encodePullRequestID("foo", "bar", 12)
+	service := &statusCheckServiceStub{result: statuscheck.Result{HeadSHA: "head", Contexts: contexts}}
+	first := performGraphQLRequestWithVariables(t, NewRouter(nil, nil, service), pullRequestStatusChecksQuery, "", map[string]any{"id": id, "endCursor": nil}, "")
+	var payload struct {
+		Data struct {
+			Node struct {
+				Rollup struct {
+					Nodes []struct {
+						Commit struct {
+							Rollup struct {
+								Contexts struct {
+									PageInfo struct {
+										EndCursor string `json:"endCursor"`
+									} `json:"pageInfo"`
+								} `json:"contexts"`
+							} `json:"statusCheckRollup"`
+						} `json:"commit"`
+					} `json:"nodes"`
+				} `json:"statusCheckRollup"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	cursor := payload.Data.Node.Rollup.Nodes[0].Commit.Rollup.Contexts.PageInfo.EndCursor
+	if cursor == "" {
+		t.Fatalf("first body = %s", first.Body.String())
+	}
+	second := performGraphQLRequestWithVariables(t, NewRouter(nil, nil, service), pullRequestStatusChecksQuery, "", map[string]any{"id": id, "endCursor": cursor}, "")
+	if strings.Contains(second.Body.String(), `"context":"ctx-099"`) || !strings.Contains(second.Body.String(), `"context":"ctx-100"`) || !strings.Contains(second.Body.String(), `"hasNextPage":false`) {
+		t.Fatalf("second body = %s", second.Body.String())
+	}
 }
 
 func TestHandlerReturnsRepositoryEnvelope(t *testing.T) {
@@ -198,17 +326,19 @@ func TestHandlerHidesPullRequestServiceErrors(t *testing.T) {
 
 func performGraphQLRequest(t *testing.T, handler http.Handler, query, operationName, authorization string) *httptest.ResponseRecorder {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
-		"query":         query,
-		"operationName": operationName,
-		"variables": map[string]any{
-			"owner":       "foo",
-			"name":        "bar",
-			"repo":        "bar",
-			"headRefName": "feature",
-			"states":      nil,
-		},
-	})
+	return performGraphQLRequestWithVariables(t, handler, query, operationName, map[string]any{
+		"owner":       "foo",
+		"name":        "bar",
+		"repo":        "bar",
+		"headRefName": "feature",
+		"states":      nil,
+		"pr_number":   12,
+	}, authorization)
+}
+
+func performGraphQLRequestWithVariables(t *testing.T, handler http.Handler, query, operationName string, variables map[string]any, authorization string) *httptest.ResponseRecorder {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"query": query, "operationName": operationName, "variables": variables})
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
