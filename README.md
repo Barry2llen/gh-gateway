@@ -1,13 +1,14 @@
 # gh-gateway
 
-Minimal GitHub GraphQL compatibility gateway for two commands:
+Minimal GitHub compatibility gateway for the three Codex P0 commands:
 
 ```text
 gh repo view --json nameWithOwner,parent
 gh pr view --json number,url,state
+gh api -H "Accept: application/vnd.github+json" repos/OWNER/REPO/commits/HEAD_SHA/pulls
 ```
 
-The gateway exposes only `POST /api/graphql` and dispatches the `RepositoryInfo` and `PullRequestForBranch` operations. It translates them to Gitea's repository and paginated pull-request REST endpoints.
+The gateway exposes `POST /api/graphql` for the `RepositoryInfo` and `PullRequestForBranch` operations, plus `GET /api/v3/repos/{owner}/{repo}/commits/{sha}/pulls` for the commit-to-PR fallback. It translates them to Gitea's repository and paginated pull-request REST endpoints.
 
 ## Run
 
@@ -36,7 +37,7 @@ docker compose up --build --abort-on-container-exit --exit-code-from e2e e2e
 docker compose down -v --remove-orphans
 ```
 
-The E2E runner verifies that the Enterprise-style request reaches `/api/graphql`, authentication is forwarded to Gitea, non-fork `parent` is null, fork parent IDs are JSON strings, `gh pr view` returns the expected number/state/URL, and `/graphql` remains unavailable.
+The E2E runner verifies both Enterprise-style API prefixes, authentication forwarding, repository/fork mapping, branch PR lookup, commit HEAD lookup, the unassociated-commit empty array, and that the github.com-style `/graphql` and `/repos/...` paths remain unavailable.
 
 ## Manual `gh` verification
 
@@ -44,6 +45,7 @@ The E2E runner verifies that the Enterprise-style request reaches `/api/graphql`
 
 ```text
 https://git.example.com/api/graphql -> http://127.0.0.1:8080/api/graphql
+https://git.example.com/api/v3/*    -> http://127.0.0.1:8080/api/v3/*
 ```
 
 Then use a temporary repository with only the gateway remote:
@@ -58,6 +60,9 @@ $env:GH_HOST = 'git.example.com'
 $env:GH_ENTERPRISE_TOKEN = 'gitea-token'
 $env:GH_PROMPT_DISABLED = '1'
 gh repo view --json nameWithOwner,parent
+gh pr view --json number,url,state
+$headSHA = git rev-parse HEAD
+gh api -H "Accept: application/vnd.github+json" "repos/foo/bar/commits/$headSHA/pulls"
 ```
 
 Expected non-fork output:
@@ -66,4 +71,4 @@ Expected non-fork output:
 {"nameWithOwner":"foo/bar","parent":null}
 ```
 
-No `/graphql`, GitHub REST, explicit PR selector, commit-to-PR fallback, checks, Actions, review, create, or merge compatibility is provided in this slice. `PullRequestForBranch` accepts only the exact `gh` 2.95.0 query shape with `states: null`.
+No `/graphql`, root `/repos/...`, explicit PR selector, checks, Actions, review, create, or merge compatibility is provided. `PullRequestForBranch` accepts only the exact `gh` 2.95.0 query shape with `states: null`. Commit-to-PR matching is intentionally limited to exact PR head SHA and merged commit SHA; it does not implement GitHub's full historical commit association semantics.

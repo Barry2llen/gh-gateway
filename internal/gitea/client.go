@@ -43,17 +43,19 @@ type ownerDTO struct {
 }
 
 type pullRequestDTO struct {
-	ID      int64      `json:"id"`
-	Number  int64      `json:"number"`
-	HTMLURL string     `json:"html_url"`
-	State   string     `json:"state"`
-	Merged  bool       `json:"merged"`
-	Base    *branchDTO `json:"base"`
-	Head    *branchDTO `json:"head"`
+	ID             int64      `json:"id"`
+	Number         int64      `json:"number"`
+	HTMLURL        string     `json:"html_url"`
+	State          string     `json:"state"`
+	Merged         bool       `json:"merged"`
+	MergeCommitSHA *string    `json:"merge_commit_sha"`
+	Base           *branchDTO `json:"base"`
+	Head           *branchDTO `json:"head"`
 }
 
 type branchDTO struct {
 	Label  string               `json:"label"`
+	SHA    string               `json:"sha"`
 	RepoID int64                `json:"repo_id"`
 	Repo   *branchRepositoryDTO `json:"repo"`
 }
@@ -245,9 +247,18 @@ func mapPullRequest(dto pullRequestDTO) (pullrequest.PullRequest, error) {
 		ID:                  strconv.FormatInt(dto.ID, 10),
 		BaseRefName:         dto.Base.Label,
 		HeadRefName:         dto.Head.Label,
+		HeadSHA:             dto.Head.SHA,
+		MergeCommitSHA:      stringValue(dto.MergeCommitSHA),
 		IsCrossRepository:   dto.Base.RepoID != dto.Head.RepoID,
 		HeadRepositoryOwner: headOwner,
 	}, nil
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func hasNextPage(totalHeader string, page, limit, count int) bool {

@@ -10,19 +10,77 @@ type providerStub struct {
 	metadata RepositoryMetadata
 	pages    map[int]Page
 	seen     []int
+	seenAuth []string
 }
 
 func (p *providerStub) GetRepositoryMetadata(context.Context, string, string, string) (RepositoryMetadata, error) {
 	return p.metadata, nil
 }
 
-func (p *providerStub) ListPullRequests(_ context.Context, _, _ string, page, _ int, _ string) (Page, error) {
+func (p *providerStub) ListPullRequests(_ context.Context, _, _ string, page, _ int, authorization string) (Page, error) {
 	p.seen = append(p.seen, page)
+	p.seenAuth = append(p.seenAuth, authorization)
 	result, ok := p.pages[page]
 	if !ok {
 		return Page{}, fmt.Errorf("unexpected page %d", page)
 	}
 	return result, nil
+}
+
+func TestServiceFindForCommitMatchesHeadAndMergedCommit(t *testing.T) {
+	t.Parallel()
+
+	provider := &providerStub{pages: map[int]Page{1: {
+		PullRequests: []PullRequest{
+			{Number: 3, State: StateClosed, HeadSHA: "other"},
+			{Number: 2, State: StateMerged, HeadSHA: "old", MergeCommitSHA: "wanted"},
+			{Number: 1, State: StateOpen, HeadSHA: "wanted"},
+		},
+	}}}
+	result, err := NewService(provider).FindForCommit(context.Background(), CommitQuery{
+		Owner: "foo", Repo: "bar", SHA: "wanted", Authorization: "token incoming",
+	})
+	if err != nil {
+		t.Fatalf("FindForCommit() error = %v", err)
+	}
+	if len(result) != 2 || result[0].Number != 2 || result[1].Number != 1 {
+		t.Fatalf("result = %#v, want merged #2 and open #1 in provider order", result)
+	}
+	if fmt.Sprint(provider.seenAuth) != "[token incoming]" {
+		t.Fatalf("authorizations = %v", provider.seenAuth)
+	}
+}
+
+func TestServiceFindForCommitPaginatesAndDeduplicates(t *testing.T) {
+	t.Parallel()
+
+	provider := &providerStub{pages: map[int]Page{
+		1: {PullRequests: []PullRequest{{Number: 2, State: StateOpen, HeadSHA: "other"}}, HasNext: true},
+		2: {PullRequests: []PullRequest{{Number: 1, State: StateMerged, HeadSHA: "wanted", MergeCommitSHA: "wanted"}}},
+	}}
+	result, err := NewService(provider).FindForCommit(context.Background(), CommitQuery{Owner: "foo", Repo: "bar", SHA: "wanted"})
+	if err != nil {
+		t.Fatalf("FindForCommit() error = %v", err)
+	}
+	if len(result) != 1 || result[0].Number != 1 {
+		t.Fatalf("result = %#v, want one copy of #1", result)
+	}
+	if fmt.Sprint(provider.seen) != "[1 2]" {
+		t.Fatalf("pages = %v, want [1 2]", provider.seen)
+	}
+}
+
+func TestServiceFindForCommitReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	provider := &providerStub{pages: map[int]Page{1: {PullRequests: []PullRequest{{Number: 1, State: StateOpen, HeadSHA: "other"}}}}}
+	result, err := NewService(provider).FindForCommit(context.Background(), CommitQuery{Owner: "foo", Repo: "bar", SHA: "missing"})
+	if err != nil {
+		t.Fatalf("FindForCommit() error = %v", err)
+	}
+	if result == nil || len(result) != 0 {
+		t.Fatalf("result = %#v, want non-nil empty slice", result)
+	}
 }
 
 func TestServiceFindForBranchFiltersAndPrioritizesOpen(t *testing.T) {

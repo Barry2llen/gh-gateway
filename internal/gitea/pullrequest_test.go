@@ -31,21 +31,21 @@ func TestClientGetsRepositoryMetadataAndMapsPullRequests(t *testing.T) {
 			_, _ = w.Write([]byte(`[
               {
                 "id":101,"number":3,"html_url":"https://git.example.test/foo/bar/pulls/3",
-                "state":"open","merged":false,
+                "state":"open","merged":false,"merge_commit_sha":null,
                 "base":{"label":"main","repo_id":10,"repo":{"owner":{"id":1,"login":"foo","full_name":"Foo"}}},
-                "head":{"label":"feature","repo_id":10,"repo":{"owner":{"id":1,"login":"foo","full_name":"Foo"}}}
+                "head":{"label":"feature","sha":"head-open","repo_id":10,"repo":{"owner":{"id":1,"login":"foo","full_name":"Foo"}}}
               },
               {
                 "id":100,"number":2,"html_url":"https://git.example.test/foo/bar/pulls/2",
-                "state":"closed","merged":false,
+                "state":"closed","merged":false,"merge_commit_sha":null,
                 "base":{"label":"main","repo_id":10,"repo":{"owner":{"id":1,"login":"foo"}}},
-                "head":{"label":"feature","repo_id":20,"repo":{"owner":{"id":2,"login":"forker","full_name":"Fork User"}}}
+                "head":{"label":"feature","sha":"head-closed","repo_id":20,"repo":{"owner":{"id":2,"login":"forker","full_name":"Fork User"}}}
               },
               {
                 "id":99,"number":1,"html_url":"https://git.example.test/foo/bar/pulls/1",
-                "state":"closed","merged":true,
+                "state":"closed","merged":true,"merge_commit_sha":"merge-sha",
                 "base":{"label":"main","repo_id":10,"repo":{"owner":{"id":1,"login":"foo"}}},
-                "head":{"label":"old-feature","repo_id":10,"repo":{"owner":{"id":1,"login":"foo"}}}
+                "head":{"label":"old-feature","sha":"head-merged","repo_id":10,"repo":{"owner":{"id":1,"login":"foo"}}}
               }
             ]`))
 		default:
@@ -74,13 +74,13 @@ func TestClientGetsRepositoryMetadataAndMapsPullRequests(t *testing.T) {
 		t.Fatalf("page = %#v, want 3 PRs and next page", page)
 	}
 	open, closed, merged := page.PullRequests[0], page.PullRequests[1], page.PullRequests[2]
-	if open.ID != "101" || open.State != pullrequest.StateOpen || open.URL != "https://git.example.test/foo/bar/pulls/3" {
+	if open.ID != "101" || open.State != pullrequest.StateOpen || open.URL != "https://git.example.test/foo/bar/pulls/3" || open.HeadSHA != "head-open" {
 		t.Fatalf("open PR = %#v", open)
 	}
 	if closed.State != pullrequest.StateClosed || !closed.IsCrossRepository || closed.HeadRepositoryOwner == nil || closed.HeadRepositoryOwner.ID != "2" || closed.HeadRepositoryOwner.Login != "forker" || closed.HeadRepositoryOwner.Name != "Fork User" {
 		t.Fatalf("closed cross-repository PR = %#v", closed)
 	}
-	if merged.State != pullrequest.StateMerged || merged.HeadRefName != "old-feature" || merged.BaseRefName != "main" {
+	if merged.State != pullrequest.StateMerged || merged.HeadRefName != "old-feature" || merged.BaseRefName != "main" || merged.HeadSHA != "head-merged" || merged.MergeCommitSHA != "merge-sha" {
 		t.Fatalf("merged PR = %#v", merged)
 	}
 }

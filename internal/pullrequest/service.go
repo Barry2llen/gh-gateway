@@ -21,20 +21,22 @@ const (
 )
 
 type RepositoryOwner struct {
-	ID    string `json:"id"`
-	Login string `json:"login"`
-	Name  string `json:"name"`
+	ID    string
+	Login string
+	Name  string
 }
 
 type PullRequest struct {
-	Number              int64            `json:"number"`
-	URL                 string           `json:"url"`
-	State               State            `json:"state"`
-	ID                  string           `json:"id"`
-	BaseRefName         string           `json:"baseRefName"`
-	HeadRefName         string           `json:"headRefName"`
-	IsCrossRepository   bool             `json:"isCrossRepository"`
-	HeadRepositoryOwner *RepositoryOwner `json:"headRepositoryOwner"`
+	Number              int64
+	URL                 string
+	State               State
+	ID                  string
+	BaseRefName         string
+	HeadRefName         string
+	HeadSHA             string
+	MergeCommitSHA      string
+	IsCrossRepository   bool
+	HeadRepositoryOwner *RepositoryOwner
 }
 
 type RepositoryMetadata struct {
@@ -50,6 +52,13 @@ type Query struct {
 	Owner         string
 	Repo          string
 	HeadRefName   string
+	Authorization string
+}
+
+type CommitQuery struct {
+	Owner         string
+	Repo          string
+	SHA           string
 	Authorization string
 }
 
@@ -120,4 +129,25 @@ func (s *Service) FindForBranch(ctx context.Context, query Query) (Result, error
 	}
 
 	return Result{Nodes: ordered, DefaultBranch: metadata.DefaultBranch}, nil
+}
+
+func (s *Service) FindForCommit(ctx context.Context, query CommitQuery) ([]PullRequest, error) {
+	matches := make([]PullRequest, 0)
+	for pageNumber := 1; ; pageNumber++ {
+		page, err := s.provider.ListPullRequests(ctx, query.Owner, query.Repo, pageNumber, MaxCandidates, query.Authorization)
+		if err != nil {
+			return nil, err
+		}
+		for _, candidate := range page.PullRequests {
+			matchesHead := candidate.HeadSHA == query.SHA
+			matchesMerge := candidate.State == StateMerged && candidate.MergeCommitSHA == query.SHA
+			if matchesHead || matchesMerge {
+				matches = append(matches, candidate)
+			}
+		}
+		if !page.HasNext {
+			break
+		}
+	}
+	return matches, nil
 }

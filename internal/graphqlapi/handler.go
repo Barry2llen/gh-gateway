@@ -54,7 +54,24 @@ type pullRequestRepository struct {
 }
 
 type pullRequestConnection struct {
-	Nodes []pullrequest.PullRequest `json:"nodes"`
+	Nodes []graphQLPullRequest `json:"nodes"`
+}
+
+type graphQLPullRequest struct {
+	Number              int64                   `json:"number"`
+	URL                 string                  `json:"url"`
+	State               pullrequest.State       `json:"state"`
+	ID                  string                  `json:"id"`
+	BaseRefName         string                  `json:"baseRefName"`
+	HeadRefName         string                  `json:"headRefName"`
+	IsCrossRepository   bool                    `json:"isCrossRepository"`
+	HeadRepositoryOwner *graphQLRepositoryOwner `json:"headRepositoryOwner"`
+}
+
+type graphQLRepositoryOwner struct {
+	ID    string `json:"id"`
+	Login string `json:"login"`
+	Name  string `json:"name"`
 }
 
 type defaultBranchRef struct {
@@ -62,10 +79,14 @@ type defaultBranchRef struct {
 }
 
 func NewRouter(repositories RepositoryService, pullRequests PullRequestService) http.Handler {
-	h := &handler{repositories: repositories, pullRequests: pullRequests}
 	router := chi.NewRouter()
-	router.Post("/api/graphql", h.graphQL)
+	router.Post("/api/graphql", NewHandler(repositories, pullRequests).ServeHTTP)
 	return router
+}
+
+func NewHandler(repositories RepositoryService, pullRequests PullRequestService) http.Handler {
+	h := &handler{repositories: repositories, pullRequests: pullRequests}
+	return http.HandlerFunc(h.graphQL)
 }
 
 func (h *handler) graphQL(w http.ResponseWriter, r *http.Request) {
@@ -140,9 +161,27 @@ func (h *handler) pullRequestForBranch(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	writeJSON(w, http.StatusOK, graphQLResponse{Data: pullRequestData{Repository: &pullRequestRepository{
-		PullRequests:     pullRequestConnection{Nodes: result.Nodes},
+		PullRequests:     pullRequestConnection{Nodes: presentPullRequests(result.Nodes)},
 		DefaultBranchRef: defaultBranchRef{Name: result.DefaultBranch},
 	}}})
+}
+
+func presentPullRequests(pullRequests []pullrequest.PullRequest) []graphQLPullRequest {
+	presented := make([]graphQLPullRequest, 0, len(pullRequests))
+	for _, pr := range pullRequests {
+		var owner *graphQLRepositoryOwner
+		if pr.HeadRepositoryOwner != nil {
+			owner = &graphQLRepositoryOwner{
+				ID: pr.HeadRepositoryOwner.ID, Login: pr.HeadRepositoryOwner.Login, Name: pr.HeadRepositoryOwner.Name,
+			}
+		}
+		presented = append(presented, graphQLPullRequest{
+			Number: pr.Number, URL: pr.URL, State: pr.State, ID: pr.ID,
+			BaseRefName: pr.BaseRefName, HeadRefName: pr.HeadRefName,
+			IsCrossRepository: pr.IsCrossRepository, HeadRepositoryOwner: owner,
+		})
+	}
+	return presented
 }
 
 func (h *handler) writeServiceError(w http.ResponseWriter, info repositoryInfo, err error) {

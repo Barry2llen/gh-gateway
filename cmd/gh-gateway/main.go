@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
+	"gh-gateway/internal/gateway"
 	"gh-gateway/internal/gitea"
+	"gh-gateway/internal/githubrest"
 	"gh-gateway/internal/graphqlapi"
 	"gh-gateway/internal/pullrequest"
 	"gh-gateway/internal/repository"
@@ -31,8 +33,11 @@ func main() {
 	repositoryService := repository.NewService(provider)
 	pullRequestService := pullrequest.NewService(provider)
 	server := &http.Server{
-		Addr:              address,
-		Handler:           graphqlapi.NewRouter(repositoryService, pullRequestService),
+		Addr: address,
+		Handler: gateway.NewRouter(
+			graphqlapi.NewHandler(repositoryService, pullRequestService),
+			githubrest.NewHandler(pullRequestService),
+		),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

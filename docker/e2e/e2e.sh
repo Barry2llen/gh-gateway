@@ -137,11 +137,38 @@ echo "${pr_json}" | jq -e '
   .url == "https://git.example.test/gateway/bar/pulls/1"
 ' >/dev/null || fail "unexpected pull request gh output"
 
+head_sha="$(git -C /tmp/pr rev-parse HEAD)"
+commit_pulls_json="$(cd /tmp/pr && gh api -H "Accept: application/vnd.github+json" \
+  "repos/gateway/bar/commits/${head_sha}/pulls")"
+echo "commit pull requests: ${commit_pulls_json}"
+echo "${commit_pulls_json}" | jq -e '
+  length == 1 and
+  .[0].number == 1 and
+  .[0].state == "open" and
+  .[0].html_url == "https://git.example.test/gateway/bar/pulls/1"
+' >/dev/null || fail "unexpected commit pull request gh output"
+
+main_sha="$(curl -fsS \
+  -H "Authorization: token ${gateway_token}" \
+  "${gitea_url}/repos/gateway/bar/branches/main" | jq -er '.commit.id')"
+empty_commit_pulls_json="$(cd /tmp/pr && gh api -H "Accept: application/vnd.github+json" \
+  "repos/gateway/bar/commits/${main_sha}/pulls")"
+echo "unassociated commit pull requests: ${empty_commit_pulls_json}"
+echo "${empty_commit_pulls_json}" | jq -e 'type == "array" and length == 0' >/dev/null \
+  || fail "unexpected unassociated commit gh output"
+
 wrong_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
   -H "Authorization: token ${forker_token}" \
   -H 'Content-Type: application/json' \
   -d '{"query":"query RepositoryInfo { repository(owner: \"forker\", name: \"bar\") { nameWithOwner } }"}' \
   https://git.example.test/graphql)"
 [ "${wrong_path_status}" = "404" ] || fail "/graphql returned HTTP ${wrong_path_status}, want 404"
+
+wrong_rest_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: token ${gateway_token}" \
+  -H 'Accept: application/vnd.github+json' \
+  "https://git.example.test/repos/gateway/bar/commits/${head_sha}/pulls")"
+[ "${wrong_rest_path_status}" = "404" ] \
+  || fail "/repos commit lookup returned HTTP ${wrong_rest_path_status}, want 404"
 
 echo "Docker Compose E2E passed."
