@@ -38,3 +38,36 @@ func TestRouterDispatchesEnterpriseGraphQLAndRESTPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestTransparentRouterFallsBackAndRejectsOtherHosts(t *testing.T) {
+	t.Parallel()
+	fallback := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/assets/app.js" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.WriteHeader(214)
+	})
+	router := NewTransparentRouter(http.NotFoundHandler(), http.NotFoundHandler(), fallback, "git.example.com")
+
+	request := httptest.NewRequest(http.MethodGet, "https://git.example.com/assets/app.js", nil)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != 214 {
+		t.Fatalf("fallback status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "https://evil.example/assets/app.js", nil)
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("mismatched host status = %d", response.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "https://git.example.com/assets/app.js", nil)
+	request.Host = "attacker@git.example.com"
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("userinfo host status = %d", response.Code)
+	}
+}

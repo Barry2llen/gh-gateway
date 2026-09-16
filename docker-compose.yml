@@ -36,6 +36,7 @@ services:
     environment:
       GITEA_BASE_URL: http://gitea:3000
       GATEWAY_ADDR: :8080
+    command: ["serve"]
     depends_on:
       gitea:
         condition: service_healthy
@@ -71,6 +72,7 @@ services:
     environment:
       GITEA_BASE_URL: http://actions-fixture:8081
       GATEWAY_ADDR: :8080
+    command: ["serve"]
     depends_on:
       - actions-fixture
     healthcheck:

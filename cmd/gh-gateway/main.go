@@ -1,63 +1,87 @@
 package main
 
 import (
-	"errors"
-	"log"
-	"net/http"
+	"context"
+	"fmt"
 	"os"
-	"time"
+	"os/signal"
+	"syscall"
 
-	"gh-gateway/internal/actions"
-	"gh-gateway/internal/feedback"
-	"gh-gateway/internal/gateway"
-	"gh-gateway/internal/gitea"
-	"gh-gateway/internal/githubrest"
-	"gh-gateway/internal/graphqlapi"
-	"gh-gateway/internal/pullrequest"
-	"gh-gateway/internal/repository"
-	"gh-gateway/internal/statuscheck"
-	userdomain "gh-gateway/internal/user"
+	"github.com/spf13/cobra"
+
+	"gh-gateway/internal/localmode"
+	"gh-gateway/internal/server"
 )
 
 func main() {
-	baseURL := os.Getenv("GITEA_BASE_URL")
-	if baseURL == "" {
-		log.Fatal("GITEA_BASE_URL is required")
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	if err := newRootCommand().ExecuteContext(ctx); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
-	address := os.Getenv("GATEWAY_ADDR")
-	if address == "" {
-		address = ":8080"
-	}
+}
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	provider, err := gitea.NewClient(baseURL, os.Getenv("GITEA_TOKEN"), httpClient)
-	if err != nil {
-		log.Fatalf("configure Gitea client: %v", err)
+func newRootCommand() *cobra.Command {
+	root := &cobra.Command{
+		Use:           "gh-gateway",
+		Short:         "GitHub compatibility gateway for Gitea",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return fmt.Errorf("unknown command %q", args[0])
+			}
+			return server.Run(cmd.Context(), server.ConfigFromEnvironment())
+		},
 	}
-	repositoryService := repository.NewService(provider)
-	pullRequestService := pullrequest.NewService(provider)
-	userService := userdomain.NewService(provider)
-	feedbackService := feedback.NewService(provider)
-	statusCheckService := statuscheck.NewService(provider)
-	actionsService := actions.NewService(provider)
-	server := &http.Server{
-		Addr: address,
-		Handler: gateway.NewRouter(
-			graphqlapi.NewHandler(repositoryService, pullRequestService, statusCheckService),
-			githubrest.NewRouter(githubrest.Handlers{
-				CommitPullRequests:   githubrest.NewHandler(pullRequestService),
-				AuthenticatedUser:    githubrest.NewUserHandler(userService),
-				ConversationComments: githubrest.NewConversationCommentsHandler(feedbackService),
-				Reviews:              githubrest.NewReviewsHandler(feedbackService),
-				InlineComments:       githubrest.NewInlineCommentsHandler(feedbackService),
-				Actions:              githubrest.NewActionsHandler(actionsService),
-			}),
-		),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	root.AddCommand(&cobra.Command{
+		Use: "serve", Short: "Run the gateway server", Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return server.Run(cmd.Context(), server.ConfigFromEnvironment())
+		},
+	})
+	addLocalModeCommands(root)
+	return root
+}
 
-	log.Printf("gh-gateway listening on %s", address)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+func addLocalModeCommands(root *cobra.Command) {
+	manager := localmode.NewDefaultManager()
+	var image string
+	var sshPort int
+	var noSSH bool
+	start := &cobra.Command{
+		Use: "start <host>", Short: "Start Windows local transparent mode", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			result, err := manager.Start(cmd.Context(), localmode.StartOptions{Host: args[0], Image: image, SSHPort: sshPort, SSHProxy: !noSSH})
+			if err == nil {
+				fmt.Fprint(cmd.OutOrStdout(), result.String())
+			}
+			return err
+		},
 	}
+	start.Flags().StringVar(&image, "image", localmode.DefaultImage, "runtime container image")
+	start.Flags().IntVar(&sshPort, "ssh-port", 22, "local and upstream SSH port")
+	start.Flags().BoolVar(&noSSH, "no-ssh-proxy", false, "disable SSH TCP passthrough")
+	root.AddCommand(start)
+	root.AddCommand(&cobra.Command{Use: "stop", Short: "Stop local transparent mode", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		result, err := manager.Stop(cmd.Context())
+		fmt.Fprint(cmd.OutOrStdout(), result)
+		return err
+	}})
+	root.AddCommand(&cobra.Command{Use: "status", Short: "Show local transparent mode status", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		report, err := manager.Status(cmd.Context())
+		fmt.Fprint(cmd.OutOrStdout(), report.String())
+		return err
+	}})
+	root.AddCommand(&cobra.Command{Use: "doctor", Short: "Diagnose local transparent mode", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		report, err := manager.Doctor(cmd.Context())
+		fmt.Fprint(cmd.OutOrStdout(), report.String())
+		return err
+	}})
+	root.AddCommand(&cobra.Command{Use: "uninstall", Short: "Remove local mode state and trusted CA", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		result, err := manager.Uninstall(cmd.Context())
+		fmt.Fprint(cmd.OutOrStdout(), result)
+		return err
+	}})
 }

@@ -17,7 +17,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gh-gateway ./cmd/gh-gateway
 
 FROM alpine:3.23 AS runtime
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && mkdir -p /certs
 COPY --from=build /out/gh-gateway /usr/local/bin/gh-gateway
-EXPOSE 8080
+EXPOSE 8080 443 22
 ENTRYPOINT ["/usr/local/bin/gh-gateway"]
+CMD ["serve"]
