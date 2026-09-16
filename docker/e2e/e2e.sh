@@ -266,23 +266,6 @@ wrong_rest_path_status="$(curl -sS -o /dev/null -w '%{http_code}' \
 [ "${wrong_rest_path_status}" = "404" ] \
   || fail "/repos commit lookup returned HTTP ${wrong_rest_path_status}, want 404"
 
-watch_log_lines="$(wc -l < "${caddy_access_log}")"
-set +e
-PATH="/opt/gh-2.100.0/bin:${PATH}" python3 /opt/babysit-pr/gh_pr_watch.py --once --pr 1 --repo gateway/bar --state-file /tmp/p1a-watcher-state.json >/tmp/watcher-output.json 2>/tmp/watcher-error.txt
-watcher_status="$?"
-set -e
-[ "${watcher_status}" -ne 0 ] || fail "babysit-pr unexpectedly completed despite unsupported Actions"
-echo "babysit-pr --once stderr: $(tr '\n' ' ' </tmp/watcher-error.txt)"
-attempts=0
-until tail -n "+$((watch_log_lines + 1))" "${caddy_access_log}" | jq -s -e '
-  any(.[]; .request.uri == "/api/v3/user") and
-  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/issues/1/comments")) and
-  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/pulls/1/reviews")) and
-  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/pulls/1/comments")) and
-  any(.[]; .request.uri | startswith("/api/v3/repos/gateway/bar/actions/runs"))
-' >/dev/null 2>&1; do attempts=$((attempts+1)); [ "${attempts}" -lt 30 ] || fail "watcher request sequence was not recorded"; sleep 1; done
-tail -n "+$((watch_log_lines + 1))" "${caddy_access_log}" | jq -s -e 'all(.[]; (.request.uri | contains("/jobs") or contains("/logs") or contains("/rerun")) | not)' >/dev/null \
-  || fail "watcher crossed beyond the first unsupported Actions request"
-echo "babysit-pr --once reached unsupported P1-B Actions after all P1-A requests, as expected."
+/usr/local/bin/p1b-e2e "${gateway_token}" "${gitea_url}" "${gh_p1a}" "${caddy_access_log}"
 
 echo "Docker Compose E2E passed."

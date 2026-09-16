@@ -40,4 +40,7 @@ su-exec git /usr/local/bin/gitea admin user generate-access-token \
   --raw > /state/forker.token
 chmod 0600 /state/gateway.token /state/forker.token
 
+su-exec git /usr/local/bin/gitea --config /data/gitea/conf/app.ini actions generate-runner-token > /state/runner.token
+chmod 0600 /state/runner.token
+
 exec sleep infinity

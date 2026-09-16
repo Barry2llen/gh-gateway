@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"gh-gateway/internal/actions"
 	"gh-gateway/internal/feedback"
 	"gh-gateway/internal/gateway"
 	"gh-gateway/internal/gitea"
@@ -38,6 +39,7 @@ func main() {
 	userService := userdomain.NewService(provider)
 	feedbackService := feedback.NewService(provider)
 	statusCheckService := statuscheck.NewService(provider)
+	actionsService := actions.NewService(provider)
 	server := &http.Server{
 		Addr: address,
 		Handler: gateway.NewRouter(
@@ -48,6 +50,7 @@ func main() {
 				ConversationComments: githubrest.NewConversationCommentsHandler(feedbackService),
 				Reviews:              githubrest.NewReviewsHandler(feedbackService),
 				InlineComments:       githubrest.NewInlineCommentsHandler(feedbackService),
+				Actions:              githubrest.NewActionsHandler(actionsService),
 			}),
 		),
 		ReadHeaderTimeout: 5 * time.Second,
