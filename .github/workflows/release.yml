@@ -54,6 +54,8 @@ jobs:
       - name: Create and push release tag
         if: steps.release.outputs.tag_exists != 'true'
         env:
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: bash scripts/create-release-tag.sh
 
