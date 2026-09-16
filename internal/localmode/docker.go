@@ -48,12 +48,16 @@ func (d dockerCLI) Check(ctx context.Context) error {
 }
 
 func dockerRunArguments(spec containerSpec) []string {
-	args := []string{"create", "--name", spec.Name, "--restart", "no", "--read-only", "--label", "io.gh-gateway.managed=true", "--label", "io.gh-gateway.instance=" + spec.InstanceID, "--label", "io.gh-gateway.host=" + spec.Host, "-p", "127.0.0.1:443:443", "-v", spec.CertVolume + ":/certs:ro", "-e", "GITEA_BASE_URL=https://" + spec.Host, "-e", "GATEWAY_ADDR=:443", "-e", "GATEWAY_TRANSPARENT_HOST=" + spec.Host, "-e", "GATEWAY_UPSTREAM_IP=" + spec.UpstreamIP, "-e", "GATEWAY_TLS_CERT=/certs/leaf.crt", "-e", "GATEWAY_TLS_KEY=/certs/leaf.key"}
+	args := []string{"create", "--pull", "missing", "--name", spec.Name, "--restart", "no", "--read-only", "--label", "io.gh-gateway.managed=true", "--label", "io.gh-gateway.instance=" + spec.InstanceID, "--label", "io.gh-gateway.host=" + spec.Host, "-p", "127.0.0.1:443:443", "-v", spec.CertVolume + ":/certs:ro", "-e", "GITEA_BASE_URL=https://" + spec.Host, "-e", "GATEWAY_ADDR=:443", "-e", "GATEWAY_TRANSPARENT_HOST=" + spec.Host, "-e", "GATEWAY_UPSTREAM_IP=" + spec.UpstreamIP, "-e", "GATEWAY_TLS_CERT=/certs/leaf.crt", "-e", "GATEWAY_TLS_KEY=/certs/leaf.key"}
 	if spec.SSHProxy {
 		port := strconv.Itoa(spec.SSHPort)
 		args = append(args, "-p", "127.0.0.1:"+port+":"+port, "-e", "GATEWAY_SSH_PROXY=1", "-e", "GATEWAY_SSH_PORT="+port)
 	}
 	return append(args, spec.Image, "serve")
+}
+
+func dockerLoaderArguments(spec containerSpec, loaderName string) []string {
+	return []string{"create", "--pull", "missing", "--name", loaderName, "--label", "io.gh-gateway.managed=true", "--entrypoint", "/bin/sh", "-v", spec.CertVolume + ":/certs", spec.Image, "-c", "chmod 0444 /certs/leaf.crt && chmod 0400 /certs/leaf.key"}
 }
 
 func (d dockerCLI) Start(ctx context.Context, spec containerSpec) (string, error) {
@@ -67,7 +71,7 @@ func (d dockerCLI) Start(ctx context.Context, spec containerSpec) (string, error
 	if err != nil {
 		return "", fmt.Errorf("create Docker certificate volume: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	output, err = d.runner.Run(ctx, "docker", "create", "--name", loaderName, "--label", "io.gh-gateway.managed=true", "--entrypoint", "/bin/sh", "-v", spec.CertVolume+":/certs", spec.Image, "-c", "chmod 0444 /certs/leaf.crt && chmod 0400 /certs/leaf.key")
+	output, err = d.runner.Run(ctx, "docker", dockerLoaderArguments(spec, loaderName)...)
 	if err != nil {
 		cleanup()
 		return "", fmt.Errorf("create Docker certificate loader: %w: %s", err, strings.TrimSpace(string(output)))
