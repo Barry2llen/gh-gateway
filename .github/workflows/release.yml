@@ -38,48 +38,7 @@ jobs:
         id: release
         env:
           RELEASE_TAG_INPUT: ${{ inputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
-            echo "Releases must be dispatched from the main branch, got ${GITHUB_REF}." >&2
-            exit 1
-          fi
-
-          tag="${RELEASE_TAG_INPUT}"
-          semver_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
-          stable_re='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
-          if [[ ! "${tag}" =~ ${semver_re} ]]; then
-            echo "Tag must be a semantic version such as v0.1.0 or v0.1.0-rc.1: ${tag}" >&2
-            exit 1
-          fi
-
-          tags="${IMAGE_NAME}:${tag}"
-          prerelease=true
-          if [[ "${tag}" =~ ${stable_re} ]]; then
-            version="${tag#v}"
-            IFS='.' read -r major minor patch <<< "${version}"
-            tags="${tags}"$'\n'"${IMAGE_NAME}:${major}.${minor}"$'\n'"${IMAGE_NAME}:latest"
-            prerelease=false
-          fi
-
-          tag_exists=false
-          if existing_commit="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}")"; then
-            if [[ "${existing_commit}" != "${GITHUB_SHA}" ]]; then
-              echo "Tag ${tag} already points to ${existing_commit}, not ${GITHUB_SHA}." >&2
-              exit 1
-            fi
-            tag_exists=true
-          fi
-
-          {
-            echo "tag=${tag}"
-            echo "prerelease=${prerelease}"
-            echo "tag_exists=${tag_exists}"
-            echo "image_tags<<EOF"
-            echo "${tags}"
-            echo "EOF"
-          } >> "${GITHUB_OUTPUT}"
+        run: bash scripts/prepare-release.sh
 
       - name: Run tests
         run: go test ./...
@@ -88,26 +47,15 @@ jobs:
         run: go vet ./...
 
       - name: Build Windows release binaries
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          ldflags="-s -w -X gh-gateway/internal/version.Version=${{ steps.release.outputs.tag }} -X gh-gateway/internal/version.Commit=${GITHUB_SHA}"
-          for arch in amd64 arm64; do
-            output="dist/gh-gateway-windows-${arch}.exe"
-            CGO_ENABLED=0 GOOS=windows GOARCH="${arch}" go build -trimpath -ldflags="${ldflags}" -o "${output}" ./cmd/gh-gateway
-          done
-          (cd dist && sha256sum gh-gateway-windows-amd64.exe gh-gateway-windows-arm64.exe > SHA256SUMS)
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: bash scripts/build-release-binaries.sh
 
       - name: Create and push release tag
         if: steps.release.outputs.tag_exists != 'true'
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          git tag -a "${RELEASE_TAG}" "${GITHUB_SHA}" -m "Release ${RELEASE_TAG}"
-          git push origin "refs/tags/${RELEASE_TAG}"
+        run: bash scripts/create-release-tag.sh
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -143,11 +91,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          args=(release create "${RELEASE_TAG}" dist/gh-gateway-windows-amd64.exe dist/gh-gateway-windows-arm64.exe dist/SHA256SUMS --verify-tag --title "${RELEASE_TAG}" --generate-notes)
-          if [[ "${PRERELEASE}" == "true" ]]; then
-            args+=(--prerelease)
-          fi
-          gh "${args[@]}"
+        run: bash scripts/create-github-release.sh

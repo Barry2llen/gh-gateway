@@ -6,6 +6,8 @@
 
 If the requested tag already points to the same dispatched commit, the tag creation step is skipped. This permits a failed run to be retried without moving an existing tag.
 
+The workflow keeps only orchestration and environment wiring in YAML. Release validation, Windows artifact construction, tag creation, and GitHub Release creation are implemented as focused scripts under `scripts/` so they can be syntax-checked and exercised outside GitHub Actions.
+
 The workflow uses only the repository `GITHUB_TOKEN`, with `contents: write` and `packages: write` permissions. It does not run the opt-in Windows administrator E2E because that test intentionally changes the hosts file and certificate trust.
 
 ## Published artifacts
