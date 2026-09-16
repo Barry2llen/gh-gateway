@@ -45,6 +45,56 @@ services:
       timeout: 2s
       retries: 30
 
+  actions-fixture:
+    build:
+      context: .
+      dockerfile: docker/actions-fixture/Dockerfile
+    environment:
+      UPSTREAM_URL: http://gitea:3000
+      FIXTURE_LOG: /state/actions-fixture.log
+    volumes:
+      - e2e-state:/state
+    depends_on:
+      gitea:
+        condition: service_healthy
+
+  rerun-success-fixture:
+    build:
+      context: .
+      dockerfile: docker/actions-fixture/Dockerfile
+    entrypoint: ["python3", "/rerun_success.py"]
+
+  gateway-fixture:
+    build:
+      context: .
+      target: runtime
+    environment:
+      GITEA_BASE_URL: http://actions-fixture:8081
+      GATEWAY_ADDR: :8080
+    depends_on:
+      - actions-fixture
+    healthcheck:
+      test: ["CMD", "sh", "-c", "nc -z 127.0.0.1 8080"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  runner:
+    build:
+      context: .
+      dockerfile: docker/runner/Dockerfile
+    environment:
+      GITEA_INSTANCE_URL: http://gitea:3000
+      GITEA_RUNNER_REGISTRATION_TOKEN_FILE: /state/runner.token
+      GITEA_RUNNER_NAME: gh-gateway-e2e
+      GITEA_RUNNER_LABELS: gh-gateway-e2e:host
+    volumes:
+      - e2e-state:/state:ro
+      - runner-data:/data
+    depends_on:
+      gitea:
+        condition: service_healthy
+
   caddy:
     image: caddy:2.10.2-alpine
     volumes:
@@ -55,9 +105,15 @@ services:
       default:
         aliases:
           - git.example.test
+          - fixture.example.test
+          - rerun-success.example.test
     depends_on:
       gateway:
         condition: service_healthy
+      gateway-fixture:
+        condition: service_healthy
+      rerun-success-fixture:
+        condition: service_started
 
   e2e:
     build:
@@ -66,7 +122,7 @@ services:
       args:
         GH_VERSION: 2.95.0
         GH_P1A_VERSION: 2.100.0
-        BABYSIT_PR_COMMIT: b13164d86f9a70adc48d22f4a5a07ed0c001a1d0
+        BABYSIT_PR_COMMIT: 0265dd7b4547fd6a88c6458f359b3c20731421c4
     volumes:
       - e2e-state:/state:ro
       - caddy-data:/caddy-data:ro
@@ -74,6 +130,8 @@ services:
       gitea:
         condition: service_healthy
       caddy:
+        condition: service_started
+      runner:
         condition: service_started
 
   codex-e2e:
@@ -105,3 +163,4 @@ volumes:
   e2e-state:
   caddy-data:
   caddy-config:
+  runner-data:

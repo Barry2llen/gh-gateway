@@ -10,3 +10,17 @@ git.example.test {
 	}
 	reverse_proxy gateway:8080
 }
+
+fixture.example.test {
+	tls internal
+	log {
+		output file /data/access.log
+		format json
+	}
+	reverse_proxy gateway-fixture:8080
+}
+
+rerun-success.example.test {
+	tls internal
+	reverse_proxy rerun-success-fixture:8082
+}

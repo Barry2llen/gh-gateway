@@ -23,6 +23,7 @@ RUN apk add --no-cache ca-certificates curl git jq python3 tar \
     && rm -rf /tmp/gh.tar.gz /tmp/gh-p1a.tar.gz "/tmp/gh_${GH_VERSION}_linux_${gh_arch}" "/tmp/gh_${GH_P1A_VERSION}_linux_${gh_arch}"
 
 COPY docker/e2e/e2e.sh /usr/local/bin/e2e
-RUN chmod 0755 /usr/local/bin/e2e
+COPY docker/e2e/p1b.sh /usr/local/bin/p1b-e2e
+RUN chmod 0755 /usr/local/bin/e2e /usr/local/bin/p1b-e2e
 
 ENTRYPOINT ["/usr/local/bin/e2e"]

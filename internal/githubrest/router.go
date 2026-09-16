@@ -12,6 +12,7 @@ type Handlers struct {
 	ConversationComments http.Handler
 	Reviews              http.Handler
 	InlineComments       http.Handler
+	Actions              http.Handler
 }
 
 func NewRouter(handlers Handlers) http.Handler {
@@ -30,6 +31,9 @@ func NewRouter(handlers Handlers) http.Handler {
 	}
 	if handlers.InlineComments != nil {
 		router.Get("/repos/{owner}/{repo}/pulls/{number}/comments", handlers.InlineComments.ServeHTTP)
+	}
+	if handlers.Actions != nil {
+		router.Mount("/repos/{owner}/{repo}/actions", handlers.Actions)
 	}
 	return router
 }
