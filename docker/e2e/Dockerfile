@@ -24,6 +24,7 @@ RUN apk add --no-cache ca-certificates curl git jq python3 tar \
 
 COPY docker/e2e/e2e.sh /usr/local/bin/e2e
 COPY docker/e2e/p1b.sh /usr/local/bin/p1b-e2e
-RUN chmod 0755 /usr/local/bin/e2e /usr/local/bin/p1b-e2e
+RUN sed -i 's/\r$//' /usr/local/bin/e2e /usr/local/bin/p1b-e2e \
+    && chmod 0755 /usr/local/bin/e2e /usr/local/bin/p1b-e2e
 
 ENTRYPOINT ["/usr/local/bin/e2e"]

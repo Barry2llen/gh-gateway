@@ -17,17 +17,53 @@ gh api repos/OWNER/REPO/actions/runs/RUN_ID/jobs -X GET -f per_page=100
 gh api repos/OWNER/REPO/actions/jobs/JOB_ID/logs
 ```
 
-The gateway exposes only the Enterprise-style `/api/graphql` and `/api/v3/...` paths required by these commands. GraphQL dispatch supports `RepositoryInfo`, expanded `PullRequestForBranch`, `PullRequestByNumber`, the two gh checks feature-detection queries, and `PullRequestStatusChecks`.
+In local transparent mode the gateway handles the Enterprise-style `/api/graphql` and `/api/v3/...` compatibility paths and proxies every other request to the same Gitea host. GraphQL dispatch supports `RepositoryInfo`, expanded `PullRequestForBranch`, `PullRequestByNumber`, the two gh checks feature-detection queries, and `PullRequestStatusChecks`.
 
-## Run
+## Local Transparent Mode (Windows 11)
+
+Local mode requires Windows 11, an elevated PowerShell terminal, Docker Desktop using Linux containers, an IPv4 Gitea hostname with a valid upstream HTTPS certificate, and free local ports 443 and (unless disabled) 22.
+
+```powershell
+docker build --target runtime -t gh-gateway:local .
+go build -o gh-gateway.exe ./cmd/gh-gateway
+.\gh-gateway.exe start git.example.com --image gh-gateway:local
+
+$env:GH_HOST = "git.example.com"
+$env:GH_ENTERPRISE_TOKEN = "<Gitea PAT>"
+codex
+```
+
+The command records the original IPv4 address before installing its marked hosts entry. The container connects to that IP while retaining the hostname as HTTP Host and TLS SNI, preventing a hosts loop without disabling certificate verification. Incoming authorization is forwarded; tokens are not saved or passed to Docker.
+
+```powershell
+.\gh-gateway.exe status
+.\gh-gateway.exe doctor
+.\gh-gateway.exe stop
+.\gh-gateway.exe uninstall
+```
+
+`stop` removes the container and only the owned hosts block, but keeps the Current User local CA for reuse. `uninstall` also removes that CA by its exact recorded thumbprint and deletes `%LOCALAPPDATA%\gh-gateway`. Use `--no-ssh-proxy` if port 22 passthrough is unnecessary; SSH remotes using the hostname will then be unavailable until stop.
+
+Local mode supports one host, IPv4 localhost, HTTPS 443, and optional same-port SSH passthrough. It does not implement automatic UAC elevation, Linux/macOS host orchestration, multi-host operation, a service, DNS, WSL-specific networking, Kubernetes, or packaging.
+
+The opt-in administrator integration test is:
+
+```powershell
+$token = Read-Host 'Gitea PAT' -AsSecureString
+.\scripts\windows-local-e2e.ps1 -HostName git.example.com -Image gh-gateway:local -Token $token -Repository owner/repo -PullRequest 1
+```
+
+## Server Mode
 
 ```powershell
 $env:GITEA_BASE_URL = 'https://gitea.example.com'
 $env:GATEWAY_ADDR = ':8080'
 # Optional. When omitted, the incoming Authorization header is forwarded.
 $env:GITEA_TOKEN = 'gitea-token'
-go run ./cmd/gh-gateway
+go run ./cmd/gh-gateway serve
 ```
+
+Invoking `gh-gateway` without a subcommand remains equivalent to `gh-gateway serve`.
 
 `GITEA_TOKEN` takes precedence over the incoming authorization value and is sent as `Authorization: token <GITEA_TOKEN>`.
 
@@ -49,7 +85,7 @@ docker compose down -v --remove-orphans
 
 The E2E runner uses the unmodified watcher pinned at `0265dd7b4547fd6a88c6458f359b3c20731421c4`. It verifies that `--once` completes with failed runs/jobs without fetching logs or rerunning anything. It separately verifies that `--retry-failed-now` reaches the failed-only rerun route and receives the explicit unsupported response without any Gitea mutation.
 
-## Manual `gh` verification
+## Manual server-mode `gh` verification
 
 `gh` requires HTTPS for a custom Enterprise-style host. Configure trusted DNS and a TLS-terminating reverse proxy so that:
 
@@ -93,4 +129,4 @@ Compatibility remains deliberately conservative:
 - Workflow IDs are stable numeric surrogate IDs derived from the repository and Gitea workflow filename. This is an emulated identity boundary; workflows deleted from the default branch cannot be resolved for rerun preflight.
 - Job-level logs are **Approximate** compatibility: raw Gitea `200 text/plain` is returned directly and GitHub's `302` temporary-download transport is not reproduced.
 - Run-level ZIP logs and failed-only rerun are **Unsupported**. `POST .../rerun-failed-jobs` returns `501` and never calls Gitea full-run or Web UI rerun behavior.
-- No root `/graphql`, `/user`, or `/repos/...`, create, merge, comment/review mutation, full Actions rerun, artifacts, dispatch, cancel, delete, attempt API, or other general GitHub compatibility is provided.
+- Compatibility handlers do not add root `/graphql`, `/user`, or `/repos/...`, create, merge, comment/review mutation, full Actions rerun, artifacts, dispatch, cancel, delete, attempt API, or other general GitHub compatibility. In local mode, non-compatibility paths are passed through unchanged to Gitea.
