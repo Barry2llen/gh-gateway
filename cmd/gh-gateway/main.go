@@ -11,6 +11,7 @@ import (
 
 	"gh-gateway/internal/localmode"
 	"gh-gateway/internal/server"
+	"gh-gateway/internal/version"
 )
 
 func main() {
@@ -41,6 +42,12 @@ func newRootCommand() *cobra.Command {
 			return server.Run(cmd.Context(), server.ConfigFromEnvironment())
 		},
 	})
+	root.AddCommand(&cobra.Command{
+		Use: "version", Short: "Show build version", Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintf(cmd.OutOrStdout(), "gh-gateway %s\ncommit: %s\n", version.DisplayVersion(), version.DisplayCommit())
+		},
+	})
 	addLocalModeCommands(root)
 	return root
 }
@@ -60,7 +67,7 @@ func addLocalModeCommands(root *cobra.Command) {
 			return err
 		},
 	}
-	start.Flags().StringVar(&image, "image", localmode.DefaultImage, "runtime container image")
+	start.Flags().StringVar(&image, "image", localmode.DefaultImage(), "runtime container image")
 	start.Flags().IntVar(&sshPort, "ssh-port", 22, "local and upstream SSH port")
 	start.Flags().BoolVar(&noSSH, "no-ssh-proxy", false, "disable SSH TCP passthrough")
 	root.AddCommand(start)

@@ -13,8 +13,12 @@ COPY . .
 CMD ["sh", "-c", "go test -count=1 ./... && go test -race -count=1 ./... && go vet ./..."]
 
 FROM dependencies AS build
+ARG VERSION=dev
+ARG COMMIT=unknown
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/gh-gateway ./cmd/gh-gateway
+RUN CGO_ENABLED=0 go build -trimpath \
+    -ldflags="-s -w -X gh-gateway/internal/version.Version=${VERSION} -X gh-gateway/internal/version.Commit=${COMMIT}" \
+    -o /out/gh-gateway ./cmd/gh-gateway
 
 FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates \

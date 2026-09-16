@@ -24,14 +24,17 @@ In local transparent mode the gateway handles the Enterprise-style `/api/graphql
 Local mode requires Windows 11, an elevated PowerShell terminal, Docker Desktop using Linux containers, an IPv4 Gitea hostname with a valid upstream HTTPS certificate, and free local ports 443 and (unless disabled) 22.
 
 ```powershell
-docker build --target runtime -t gh-gateway:local .
-go build -o gh-gateway.exe ./cmd/gh-gateway
-.\gh-gateway.exe start git.example.com --image gh-gateway:local
+# Download gh-gateway-windows-amd64.exe from GitHub Releases first.
+Rename-Item gh-gateway-windows-amd64.exe gh-gateway.exe
+
+.\gh-gateway.exe start git.example.com
 
 $env:GH_HOST = "git.example.com"
 $env:GH_ENTERPRISE_TOKEN = "<Gitea PAT>"
 codex
 ```
+
+Windows ARM64 users can download `gh-gateway-windows-arm64.exe` instead. A released CLI automatically uses the matching published runtime image from `ghcr.io/barry2llen/gh-gateway`; `--image` remains available for an explicit override. Docker Desktop is still required. Run `start`, `stop`, and `uninstall` from an elevated PowerShell terminal.
 
 The command records the original IPv4 address before installing its marked hosts entry. The container connects to that IP while retaining the hostname as HTTP Host and TLS SNI, preventing a hosts loop without disabling certificate verification. Incoming authorization is forwarded; tokens are not saved or passed to Docker.
 
@@ -44,13 +47,23 @@ The command records the original IPv4 address before installing its marked hosts
 
 `stop` removes the container and only the owned hosts block, but keeps the Current User local CA for reuse. `uninstall` also removes that CA by its exact recorded thumbprint and deletes `%LOCALAPPDATA%\gh-gateway`. Use `--no-ssh-proxy` if port 22 passthrough is unnecessary; SSH remotes using the hostname will then be unavailable until stop.
 
-Local mode supports one host, IPv4 localhost, HTTPS 443, and optional same-port SSH passthrough. It does not implement automatic UAC elevation, Linux/macOS host orchestration, multi-host operation, a service, DNS, WSL-specific networking, Kubernetes, or packaging.
+Local mode supports one host, IPv4 localhost, HTTPS 443, and optional same-port SSH passthrough. It does not implement automatic UAC elevation, Linux/macOS host orchestration, multi-host operation, a service, DNS, WSL-specific networking, Kubernetes, or an installer.
 
 The opt-in administrator integration test is:
 
 ```powershell
 $token = Read-Host 'Gitea PAT' -AsSecureString
 .\scripts\windows-local-e2e.ps1 -HostName git.example.com -Image gh-gateway:local -Token $token -Repository owner/repo -PullRequest 1
+```
+
+### Development
+
+Source builds continue to use the `latest` runtime image by default. Build a matching local image and override it explicitly while developing:
+
+```powershell
+docker build --target runtime -t gh-gateway:local .
+go build -o gh-gateway.exe ./cmd/gh-gateway
+.\gh-gateway.exe start git.example.com --image gh-gateway:local
 ```
 
 ## Server Mode

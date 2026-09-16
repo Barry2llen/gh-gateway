@@ -14,10 +14,13 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"gh-gateway/internal/version"
 )
 
-const DefaultImage = "ghcr.io/barry2llen/gh-gateway:latest"
 const elevationError = "This command must be run from an elevated terminal."
+
+func DefaultImage() string { return version.RuntimeImage() }
 
 var hostnamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
@@ -190,7 +193,7 @@ func validateStartOptions(options *StartOptions) error {
 		return errors.New("host must be a fully qualified ASCII DNS name")
 	}
 	if options.Image == "" {
-		options.Image = DefaultImage
+		options.Image = DefaultImage()
 	}
 	if options.SSHPort < 1 || options.SSHPort > 65535 {
 		return errors.New("ssh port must be between 1 and 65535")
